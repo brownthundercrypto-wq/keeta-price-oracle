@@ -51,6 +51,9 @@ let evaluating = false;
 // after self-heal retries, null = none attempted yet. Purely observational — set around the existing
 // publish call; does not alter publishing behavior.
 let lastPublishOk = null;
+// Metadata about the latest SUCCESSFUL on-chain publish (for the transparency dashboard):
+// { blockHash, previous, publishedAt (ISO), trigger, reason } — or null before the first publish.
+let lastPublish = null;
 
 function recentPublishCount(now) {
   publishTimes = publishTimes.filter((t) => now - t < HOUR_MS);
@@ -60,6 +63,11 @@ function recentPublishCount(now) {
 // Read the last publish attempt's health (for the alerter). { ok: boolean|null }.
 export function getPublishHealth() {
   return { ok: lastPublishOk };
+}
+
+// Read metadata about the latest successful on-chain publish (for the dashboard), or null.
+export function getLastPublish() {
+  return lastPublish;
 }
 
 // Numeric last-published timestamp (global). Persisted so heartbeat/min-interval survive restarts.
@@ -197,9 +205,19 @@ export async function evaluateAndMaybePublish(nowMs = Date.now()) {
     setMeta(META_LAST_PUBLISH_TS, nowMs);
     publishTimes.push(nowMs);
 
+    const triggerLabel = firstRun
+      ? 'first-run'
+      : triggerDeviation && triggerHeartbeat
+        ? 'heartbeat+deviation'
+        : triggerDeviation
+          ? 'deviation'
+          : 'heartbeat';
+    // Record the latest on-chain publish for the transparency dashboard (observational only).
+    lastPublish = { blockHash, previous, publishedAt: new Date(nowMs).toISOString(), trigger: triggerLabel, reason };
+
     console.log(
       `[push] published snapshot SET_INFO block: ${blockHash} (previous: ${previous}) | ` +
-        `trigger=${firstRun ? 'first-run' : triggerDeviation && triggerHeartbeat ? 'heartbeat+deviation' : triggerDeviation ? 'deviation' : 'heartbeat'} | ` +
+        `trigger=${triggerLabel} | ` +
         `size=${size} | publishes/hr=${recentPublishCount(nowMs)}/${MAX_PUBLISHES_PER_HOUR}`,
     );
     return reason;

@@ -6,6 +6,8 @@ import { ASSETS, PRICE_SCALE_DECIMALS, MIN_SOURCES, VERSION, PUBLIC_URL, OUTLIER
 import { SOURCE_NAMES } from './sources.js';
 import { computeTwap } from './timeseries.js';
 import { createRateLimiter } from './rateLimit.js';
+import { getLastPublish } from './pushFeed.js';
+import { buildDashboardData, dashboardPage } from './dashboard.js';
 
 const START_TIME = new Date().toISOString();
 const REPO_URL = 'https://github.com/brownthundercrypto-wq/keeta-price-oracle';
@@ -52,6 +54,10 @@ function landingPage() {
   <p class="tag">A multi-source, median-aggregated USD price feed on the <strong>Keeta testnet</strong>.
      Every quote — spot <em>and</em> TWAP — is <strong>cryptographically signed</strong> and independently verifiable.</p>
   <p><span class="badge">testnet</span> &nbsp; <span class="badge">signed &amp; verifiable</span> &nbsp; <span class="badge">median of up to ${SOURCE_NAMES.length} sources</span> &nbsp; <span class="badge">1h / 24h TWAP</span> &nbsp; <span class="badge">push feed on-chain</span></p>
+
+  <p><a href="/dashboard"><strong>→ Live transparency dashboard</strong></a> — see every pair's median,
+     confidence, TWAP, and the exact per-source breakdown (including sources dropped as outliers),
+     auto-refreshing.</p>
 
   <h2>What this is</h2>
   <p>Prices are fetched from multiple independent sources (CoinGecko, Coinbase, Kraken, CoinPaprika,
@@ -244,6 +250,35 @@ export function createServer() {
       sources: [...liveSources].sort(),
       pairs: perPair,
     });
+  });
+
+  // GET /dashboard-data -> ONE read-only response with everything the dashboard needs for ALL pairs.
+  // Deliberately a GET (exempt from the POST-only rate limiter, like /health) so the auto-refreshing
+  // dashboard never hammers the signed POST routes.
+  app.get('/dashboard-data', (_req, res) => {
+    try {
+      const cache = getCache();
+      const nowMs = Date.now();
+      const twapResolver = (pair) => ({
+        twap1h: twapField(pair, TWAP_WINDOWS['1h'], nowMs).signed,
+        twap24h: twapField(pair, TWAP_WINDOWS['24h'], nowMs).signed,
+      });
+      const data = buildDashboardData({
+        prices: cache.prices,
+        oracle: getAddress(),
+        twapResolver,
+        onchain: getLastPublish(),
+        nowIso: new Date(nowMs).toISOString(),
+      });
+      res.json(data);
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  // GET /dashboard -> self-contained transparency dashboard HTML (fetches /dashboard-data). Exempt.
+  app.get('/dashboard', (_req, res) => {
+    res.type('html').send(dashboardPage());
   });
 
   // POST /getPrice { pair } -> latest median price + signed (provenance-attested) quote
