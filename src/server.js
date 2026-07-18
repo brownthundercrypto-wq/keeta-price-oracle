@@ -3,8 +3,84 @@ import express from 'express';
 import { getCache, toDecimalString, toPriceScaled } from './priceFeed.js';
 import { attest, getAddress, getOnChainHistory } from './keetaOracle.js';
 import { ASSETS, PRICE_SCALE_DECIMALS, MIN_SOURCES, VERSION } from './config.js';
+import { SOURCE_NAMES } from './sources.js';
 
 const START_TIME = new Date().toISOString();
+const REPO_URL = 'https://github.com/brownthundercrypto-wq/keeta-price-oracle';
+const VERIFY_URL = `${REPO_URL}/blob/main/verify-attestation.mjs`;
+
+// Self-contained landing page (no framework, inline CSS) served at GET /.
+function landingPage() {
+  const pairs = ASSETS.map((a) => a.pair);
+  const pairChips = pairs.map((p) => `<code class="pair">${p}</code>`).join(' ');
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Keeta Price Oracle (testnet)</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+         background: #0f1115; color: #e6e6e6; }
+  .wrap { max-width: 820px; margin: 0 auto; padding: 40px 20px 64px; }
+  h1 { font-size: 1.7rem; margin: 0 0 4px; }
+  h2 { font-size: 1.1rem; margin: 32px 0 10px; border-bottom: 1px solid #262a33; padding-bottom: 6px; }
+  .tag { color: #8b93a7; margin: 0 0 20px; }
+  a { color: #7aa2f7; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .pair { background: #1a1e27; border: 1px solid #262a33; border-radius: 6px; padding: 2px 8px; margin-right: 4px; display: inline-block; }
+  .badge { display: inline-block; background: #16351f; color: #7ee2a8; border: 1px solid #1f5132; border-radius: 999px; padding: 2px 10px; font-size: 0.8rem; }
+  table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+  td, th { text-align: left; padding: 8px 10px; border-bottom: 1px solid #23272f; vertical-align: top; }
+  th { color: #8b93a7; font-weight: 600; }
+  pre { background: #1a1e27; border: 1px solid #262a33; border-radius: 8px; padding: 12px 14px; overflow-x: auto; }
+  .muted { color: #8b93a7; }
+  footer { margin-top: 40px; color: #8b93a7; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Keeta Price Oracle <span class="muted">v${VERSION}</span></h1>
+  <p class="tag">A multi-source, median-aggregated USD price feed on the <strong>Keeta testnet</strong>.
+     Every quote is <strong>cryptographically signed</strong> and independently verifiable.</p>
+  <p><span class="badge">testnet</span> &nbsp; <span class="badge">signed &amp; verifiable</span> &nbsp; <span class="badge">median of up to ${SOURCE_NAMES.length} sources</span></p>
+
+  <h2>What this is</h2>
+  <p>Prices are fetched from multiple independent sources (CoinGecko, Coinbase, Kraken, CoinPaprika,
+     MEXC, Bitmart), aggregated by <strong>median</strong> (≥2 live sources required, else the pair is
+     marked stale), cached, and published on-chain as signed <code>SET_INFO</code> snapshots.
+     The oracle account is <code>${getAddress()}</code>.</p>
+
+  <h2>Pairs</h2>
+  <p>${pairChips}</p>
+
+  <h2>Endpoints</h2>
+  <table>
+    <tr><th>Endpoint</th><th>Example</th></tr>
+    <tr><td><code>GET /health</code></td><td><code>curl $BASE/health</code></td></tr>
+    <tr><td><code>POST /getPrice</code></td><td><code>curl -X POST $BASE/getPrice -H 'content-type: application/json' -d '{"pair":"KTA-USD"}'</code></td></tr>
+    <tr><td><code>POST /proof</code></td><td><code>curl -X POST $BASE/proof -H 'content-type: application/json' -d '{"pair":"KTA-USD"}'</code></td></tr>
+    <tr><td><code>POST /getPriceHistory</code></td><td><code>curl -X POST $BASE/getPriceHistory -H 'content-type: application/json' -d '{"pair":"KTA-USD","limit":10}'</code></td></tr>
+  </table>
+  <p class="muted">Replace <code>$BASE</code> with this host. <code>pair</code> accepts the pair, symbol, or CoinGecko id.</p>
+
+  <h2>Signed &amp; verifiable</h2>
+  <p>Every <code>/getPrice</code> response includes a <code>signedFields</code> list and an
+     <code>attestation</code>. Anyone can verify it against the oracle's public key with
+     <a href="${VERIFY_URL}">verify-attestation.mjs</a> — a clean-room verifier that imports none of
+     this server's code. Tampering with any signed field (price, scaled integer, or the source list)
+     fails verification.</p>
+
+  <h2>Source</h2>
+  <p><a href="${REPO_URL}">${REPO_URL}</a></p>
+
+  <footer>Keeta testnet · no real value · prices for development use only.</footer>
+</div>
+</body>
+</html>`;
+}
 
 // Canonical, attested payload. Provenance (`method` + ordered `sources`) is SIGNED, not just shown,
 // so a consumer verifies which sources and aggregation produced the price. `sources` is the ordered
@@ -76,6 +152,11 @@ function resolvePrice(input) {
 export function createServer() {
   const app = express();
   app.use(express.json());
+
+  // Landing page (human-facing) at root.
+  app.get('/', (_req, res) => {
+    res.type('html').send(landingPage());
+  });
 
   app.get('/health', (_req, res) => {
     const cache = getCache();

@@ -83,6 +83,36 @@ consumers always get one consistent format. New blocks are `legacyShape: false`.
 timestamp, which sources were used vs dropped, the aggregation method, and the final median. It is
 the "show exactly where the price came from" endpoint.
 
+## Integrate in 5 minutes
+
+Fetch a price and **verify its signature** before trusting it — using only the two public packages,
+no oracle code. A runnable version is in [`examples/client.mjs`](examples/client.mjs).
+
+```js
+// npm i @keetanetwork/keetanet-client @keetanetwork/anchor
+import { createRequire } from 'module';
+import { VerifySignedData } from '@keetanetwork/anchor/lib/utils/signing.js';
+const require = createRequire(import.meta.url);
+const { Account } = require('@keetanetwork/keetanet-client').lib;
+
+const BASE = 'https://keeta-price-oracle-production.up.railway.app';
+const q = await (await fetch(`${BASE}/getPrice`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ pair: 'KTA-USD' }),
+})).json();
+
+const account = Account.fromPublicKeyString(q.oracle);
+const values = q.signedFields.map((f) => q[f]);          // exact signed values, in order
+if (!(await VerifySignedData(account, values, q.attestation))) throw new Error('invalid signature');
+
+console.log(`${q.pair} = ${q.price} ${q.quoteCurrency}`); // only trust it once verified
+```
+
+```bash
+node examples/client.mjs                 # KTA-USD from the live endpoint
+node examples/client.mjs BTC-USD         # any supported pair
+```
+
 > **Decimals note.** This oracle reports a USD **price**, never a token amount, so it deliberately
 > does **not** emit any token's on-chain decimals (e.g. testnet KTA = 9 dp) — conflating the two is a
 > scaling footgun. `priceScaleDecimals` is *price* fixed-point precision, unrelated to token decimals.
