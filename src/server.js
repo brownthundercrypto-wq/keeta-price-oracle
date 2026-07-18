@@ -2,8 +2,9 @@
 import express from 'express';
 import { getCache, toDecimalString, toPriceScaled } from './priceFeed.js';
 import { attest, getAddress, getOnChainHistory } from './keetaOracle.js';
-import { ASSETS, PRICE_SCALE_DECIMALS, MIN_SOURCES, VERSION, PUBLIC_URL, OUTLIER_THRESHOLD } from './config.js';
+import { ASSETS, PRICE_SCALE_DECIMALS, MIN_SOURCES, VERSION, PUBLIC_URL, OUTLIER_THRESHOLD, TWAP_WINDOWS } from './config.js';
 import { SOURCE_NAMES } from './sources.js';
+import { computeTwap } from './timeseries.js';
 
 const START_TIME = new Date().toISOString();
 const REPO_URL = 'https://github.com/brownthundercrypto-wq/keeta-price-oracle';
@@ -89,9 +90,31 @@ function landingPage() {
 // Canonical, attested payload. Provenance (`method` + ordered `sources`) is SIGNED, not just shown,
 // so a consumer verifies which sources and aggregation produced the price. `sources` is the ordered
 // comma-joined source-name list; `timestamp` is the observation time (when the aggregation ran).
-const SIGNED_FIELDS = ['pair', 'quoteCurrency', 'price', 'priceScaled', 'priceScaleDecimals', 'method', 'sources', 'confidenceBand', 'confidencePct', 'timestamp'];
+const SIGNED_FIELDS = ['pair', 'quoteCurrency', 'price', 'priceScaled', 'priceScaleDecimals', 'method', 'sources', 'confidenceBand', 'confidencePct', 'twap1h', 'twap24h', 'timestamp'];
+// /twap has its own (smaller) signed canonical.
+const TWAP_SIGNED_FIELDS = ['pair', 'quoteCurrency', 'window', 'twap', 'timestamp'];
 
-async function buildAttestation(entry) {
+// Round-then-stringify so a stable decimal string is signed.
+const fixed = (n, dp) => toDecimalString(Math.round(n * 10 ** dp) / 10 ** dp);
+
+// Compute a single TWAP window. Returns { signed, detail }.
+// `signed` is what goes into the signed payload: the value string, or "building" on cold start.
+function twapField(pair, windowMs, nowMs) {
+  const r = computeTwap(pair, windowMs, nowMs);
+  const windowSeconds = Math.floor(windowMs / 1000);
+  const haveSeconds = Math.floor((r.haveMs || 0) / 1000);
+  if (r.status !== 'ready') {
+    return { signed: 'building', detail: { status: 'building', value: null, haveSeconds, windowSeconds, samples: r.samples } };
+  }
+  const value = fixed(r.value, PRICE_SCALE_DECIMALS);
+  return { signed: value, detail: { status: 'ready', value, haveSeconds, windowSeconds, samples: r.samples } };
+}
+
+// Build the full signed spot+confidence+TWAP quote for an entry (used by /getPrice and /proof).
+async function buildSignedQuote(entry) {
+  const nowMs = Date.now();
+  const t1h = twapField(entry.pair, TWAP_WINDOWS['1h'], nowMs);
+  const t24h = twapField(entry.pair, TWAP_WINDOWS['24h'], nowMs);
   const canonical = {
     pair: entry.pair,
     quoteCurrency: entry.quoteCurrency,
@@ -102,11 +125,12 @@ async function buildAttestation(entry) {
     sources: entry.sources, // canonical ordered, comma-joined provenance string
     confidenceBand: entry.confidenceBand, // absolute agreement band (price units)
     confidencePct: entry.confidencePct, // relative agreement %
+    twap1h: t1h.signed, // TWAP value or "building" (SIGNED)
+    twap24h: t24h.signed, // TWAP value or "building" (SIGNED)
     timestamp: entry.updatedAt,
   };
-  const values = SIGNED_FIELDS.map((f) => canonical[f]);
-  const attestation = await attest(values);
-  return { values, attestation };
+  const attestation = await attest(SIGNED_FIELDS.map((f) => canonical[f]));
+  return { canonical, twapDetail: { '1h': t1h.detail, '24h': t24h.detail }, attestation };
 }
 
 // Normalize a historical on-chain price entry to ONE consistent shape.
@@ -214,7 +238,7 @@ export function createServer() {
           droppedSources: entry.droppedSources ?? [],
         });
       }
-      const { attestation } = await buildAttestation(entry);
+      const { canonical, twapDetail, attestation } = await buildSignedQuote(entry);
       res.json({
         ok: true,
         oracle: getAddress(),
@@ -230,6 +254,10 @@ export function createServer() {
         // Confidence from surviving-source agreement (both SIGNED). Lower = tighter agreement.
         confidenceBand: entry.confidenceBand, // absolute, in USD price units
         confidencePct: entry.confidencePct, // relative, percent
+        // TWAP over 1h / 24h windows (SIGNED). "building" until enough history exists.
+        twap1h: canonical.twap1h,
+        twap24h: canonical.twap24h,
+        twapDetail, // per-window { status, value, haveSeconds, windowSeconds, samples } (unsigned detail)
         liveSourceCount: entry.liveSourceCount,
         stale: !!entry.stale,
         timestamp: entry.updatedAt, // observation time (SIGNED)
@@ -278,13 +306,55 @@ export function createServer() {
         stale: !!entry.stale,
         timestamp: entry.updatedAt,
       };
-      // Attach the same attestation /getPrice serves, when there is a signable price.
+      // Attach the same signed quote /getPrice serves, when there is a signable price.
       if (entry.price != null) {
-        const { attestation } = await buildAttestation(entry);
+        const { canonical, twapDetail, attestation } = await buildSignedQuote(entry);
+        response.twap1h = canonical.twap1h;
+        response.twap24h = canonical.twap24h;
+        response.twapDetail = twapDetail;
         response.signedFields = SIGNED_FIELDS;
         response.attestation = attestation;
       }
       res.json(response);
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  // POST /twap { pair, window } -> time-weighted average price for a window (default 1h), signed.
+  app.post('/twap', async (req, res) => {
+    try {
+      const entry = resolvePrice(req.body?.pair);
+      if (!entry) {
+        return res.status(404).json({ ok: false, error: `Unknown or unavailable pair: ${req.body?.pair}` });
+      }
+      const window = String(req.body?.window || '1h');
+      const windowMs = TWAP_WINDOWS[window];
+      if (!windowMs) {
+        return res.status(400).json({ ok: false, error: `Unsupported window: ${window}. Supported: ${Object.keys(TWAP_WINDOWS).join(', ')}` });
+      }
+      const nowMs = Date.now();
+      const { signed, detail } = twapField(entry.pair, windowMs, nowMs);
+      const timestamp = new Date(nowMs).toISOString();
+      // Sign the TWAP value + window (+ pair, quoteCurrency, timestamp) so it's attested like spot.
+      const canonical = { pair: entry.pair, quoteCurrency: entry.quoteCurrency, window, twap: signed, timestamp };
+      const attestation = await attest(TWAP_SIGNED_FIELDS.map((f) => canonical[f]));
+      res.json({
+        ok: true,
+        oracle: getAddress(),
+        pair: entry.pair,
+        symbol: entry.symbol,
+        quoteCurrency: entry.quoteCurrency,
+        window,
+        twap: signed, // TWAP value string, or "building" (SIGNED)
+        status: detail.status,
+        haveSeconds: detail.haveSeconds,
+        windowSeconds: detail.windowSeconds,
+        samples: detail.samples,
+        timestamp,
+        signedFields: TWAP_SIGNED_FIELDS,
+        attestation,
+      });
     } catch (e) {
       res.status(500).json({ ok: false, error: e.message });
     }

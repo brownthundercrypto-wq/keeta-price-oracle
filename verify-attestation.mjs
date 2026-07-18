@@ -107,6 +107,16 @@ async function main() {
     console.log(`TAMPER_CONFIDENCE: "${values[iConf]}" -> "${tamperedConf[iConf]}"`);
     console.log('VERIFY_TAMPERED_CONFIDENCE=' + (await VerifySignedData(account, tamperedConf, resp.attestation)));
   }
+
+  // 5e. Tamper signed `twap1h` alone (if present) -> must be false.
+  //     Proves the TWAP is attested like spot (works whether it's a value or "building").
+  const iTwap = resp.signedFields.indexOf('twap1h');
+  if (iTwap !== -1) {
+    const tamperedTwap = values.slice();
+    tamperedTwap[iTwap] = flipOneDigit(tamperedTwap[iTwap]); // appends a char if non-numeric ("building")
+    console.log(`TAMPER_TWAP1H: "${values[iTwap]}" -> "${tamperedTwap[iTwap]}"`);
+    console.log('VERIFY_TAMPERED_TWAP1H=' + (await VerifySignedData(account, tamperedTwap, resp.attestation)));
+  }
 }
 
 main().catch((e) => {

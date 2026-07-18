@@ -7,6 +7,13 @@ storage.db-journal
 *.key
 *.pem
 
+# Persisted TWAP time-series DB (local runtime state; never commit)
+data/
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+
 # Session continuity notes (may contain throwaway testnet seeds)
 PROGRESS.md
 

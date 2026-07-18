@@ -98,10 +98,10 @@ function publishSetInfo(name, description, obj) {
   });
 }
 
-// Publish the current price snapshot as an on-chain SET_INFO block, with compact provenance
-// (median price + per-source raw values/timestamps) so the on-chain record shows how each
-// price was derived.
-export async function publishSnapshot(prices) {
+// Build the minimal on-chain snapshot object. TWAP is deliberately NOT included here — it is
+// API-only. Kept compact (name+price per source) to stay within the ~5464-char SET_INFO metadata
+// limit. Exported so the payload size can be measured before deploy.
+export function buildSnapshotMetadata(prices, timestamp) {
   const compact = {};
   for (const [pair, e] of Object.entries(prices)) {
     compact[pair] = {
@@ -116,20 +116,28 @@ export async function publishSnapshot(prices) {
       liveSourceCount: e.liveSourceCount,
       stale: !!e.stale,
       updatedAt: e.updatedAt,
-      // Compact on-chain provenance: name+price only, to stay within the SET_INFO metadata size
-      // limit. Full per-source detail (ts, native quote, outliers) is served off-chain by /proof.
       sourceReports: (e.sourceReports || []).map((r) => ({ name: r.name, price: r.price })),
     };
   }
-  const snapshot = {
+  return {
     type: 'price-snapshot',
     oracle: getAddress(),
     network: 'test',
     base: 'usd',
     aggregation: 'median',
-    timestamp: new Date().toISOString(),
+    timestamp,
     prices: compact,
   };
+}
+
+// The base64 length of the SET_INFO metadata for a given snapshot (must stay under ~5464).
+export function snapshotMetadataLength(prices, timestamp) {
+  return Buffer.from(JSON.stringify(buildSnapshotMetadata(prices, timestamp))).toString('base64').length;
+}
+
+// Publish the current price snapshot as an on-chain SET_INFO block.
+export async function publishSnapshot(prices) {
+  const snapshot = buildSnapshotMetadata(prices, new Date().toISOString());
   return await publishSetInfo('PRICE_ORACLE', 'Keeta testnet price oracle', snapshot);
 }
 

@@ -2,6 +2,7 @@
 import { NETWORK, PORT, PUBLISH_INTERVAL_MS } from './config.js';
 import { pollOnce, startPolling, getCache } from './priceFeed.js';
 import { initOracle, publishSnapshot, publishDiscovery } from './keetaOracle.js';
+import { initTimeseries } from './timeseries.js';
 import { createServer } from './server.js';
 
 function hardFailIfNotTest() {
@@ -31,6 +32,10 @@ async function main() {
   const { address } = await initOracle();
   console.log(`[oracle] identity: ${address}`);
   console.log(`[oracle] network: test (hard-fail on any other network)`);
+
+  // Persisted TWAP time-series (survives restarts; on Railway points at a mounted volume).
+  const { path: dbPath } = initTimeseries();
+  console.log(`[oracle] timeseries db: ${dbPath}`);
 
   // Warm the cache before serving / publishing.
   await pollOnce();

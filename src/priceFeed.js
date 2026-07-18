@@ -4,6 +4,7 @@
 // fewer -> the pair is marked stale (never publish a single-source number).
 import { ASSETS, POLL_INTERVAL_MS, PRICE_SCALE_DECIMALS, MIN_SOURCES, OUTLIER_THRESHOLD } from './config.js';
 import { fetchAllSources } from './sources.js';
+import { recordPrice, pruneOld } from './timeseries.js';
 
 let cache = { prices: {}, fetchedAt: null, source: 'multi-source-median', method: 'median' };
 let timer = null;
@@ -104,6 +105,9 @@ export async function pollOnce() {
     const pct = med > 0 ? (band / med) * 100 : 0; // relative %
     const usedNames = survivors.map((u) => u.name); // already name-sorted -> deterministic
 
+    // Persist the published median for TWAP (API-only; never goes on-chain).
+    recordPrice(a.pair, med, Date.parse(fetchedAt));
+
     prices[a.pair] = {
       pair: a.pair,
       symbol: a.symbol,
@@ -124,6 +128,7 @@ export async function pollOnce() {
     };
   }
 
+  pruneOld(Date.parse(fetchedAt)); // keep the DB bounded to the retention horizon
   cache = { prices, fetchedAt, source: 'multi-source-median', method: 'median' };
   return cache;
 }

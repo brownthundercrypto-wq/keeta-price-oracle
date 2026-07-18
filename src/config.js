@@ -30,6 +30,16 @@ export const PUBLIC_URL = (
 export const POLL_INTERVAL_MS = 60_000;          // fetch CoinGecko every 60s
 export const PUBLISH_INTERVAL_MS = 5 * 60_000;   // publish an on-chain SET_INFO snapshot every 5 min
 
+// TWAP (time-weighted average price) — API-only, NEVER added to the on-chain snapshot.
+export const TWAP_WINDOWS = { '1h': 3_600_000, '24h': 86_400_000 };
+export const TWAP_LONGEST_MS = Math.max(...Object.values(TWAP_WINDOWS));
+// Keep a couple hours beyond the longest window so the carry-in sample (the price active at the
+// window's start) isn't pruned.
+export const TWAP_RETENTION_MS = TWAP_LONGEST_MS + 2 * 3_600_000;
+// Persisted time-series DB. On Railway this points at a mounted volume (DB_PATH=/data/...) so the
+// TWAP window survives redeploys. Local default lives under ./data (gitignored).
+export const DB_PATH = process.env.DB_PATH || './data/prices.sqlite';
+
 export const COINGECKO_URL = 'https://api.coingecko.com/api/v3/simple/price';
 
 // The exact set from the spec.

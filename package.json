@@ -5,14 +5,15 @@
   "type": "module",
   "private": true,
   "engines": {
-    "node": ">=18"
+    "node": "22.x"
   },
   "scripts": {
     "start": "node src/index.js"
   },
   "dependencies": {
-    "@keetanetwork/keetanet-client": "0.16.1",
     "@keetanetwork/anchor": "0.0.60",
+    "@keetanetwork/keetanet-client": "0.16.1",
+    "better-sqlite3": "^12.11.1",
     "express": "^4.21.2"
   },
   "overrides": {
