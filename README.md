@@ -1,12 +1,16 @@
 # price-oracle-anchor (Keeta, TESTNET ONLY)
 
-A price-feed oracle anchor built on the AnchorFactory FX-anchor pattern. It pulls USD prices
-from the CoinGecko free API, caches them in memory, publishes signed price snapshots on-chain as
-`SET_INFO` blocks on the anchor's own chain, and serves signed (attested) quotes over HTTP.
+A price-feed oracle anchor built on the AnchorFactory FX-anchor pattern. It pulls USD prices from
+**up to six independent sources**, aggregates them by **median**, and serves signed (attested)
+quotes over HTTP — both **spot** and **time-weighted (TWAP)**. The latest spot price is kept in an
+**in-memory cache** (refreshed every 60s; it simply repopulates on the next poll), while the
+**TWAP / history time-series is persisted in SQLite on a mounted volume, so it survives restarts and
+redeploys**. Signed price snapshots are published on-chain as `SET_INFO` blocks on the anchor's own
+chain via a **push feed** (heartbeat *and* deviation triggers — see below).
 
 > **TESTNET ONLY.** The process hard-fails (exits) if the network is anything other than `test`.
 
-## What it does (v2 scope)
+## What it does (v3 scope)
 
 - **Multi-source data** — for every pair, prices are fetched from **up to six independent sources**
   and the **median** is published (even counts average the two middle values). USD-quoted:
@@ -22,18 +26,40 @@ from the CoinGecko free API, caches them in memory, publishes signed price snaps
   ordered `sources` list, so consumers verify *which sources and method* produced the price, not
   just the number.
 - **Identity** — derived from `APP_SEED` (hex) via `KeetaNet.lib.Account.fromSeed(seed, 0)`.
-- **On-chain publishing** — every **5 minutes** the current snapshot is published as a `SET_INFO`
-  block (base64-encoded JSON in the `metadata` field), chained off the account's current head.
-  A `generateFeeBlock` callback is passed to the publish call.
+- **Time-weighted average price (TWAP)** — for every pair, `/getPrice` returns signed **`twap1h`** and
+  **`twap24h`**, and **`/twap`** returns a single window on its own signed attestation. TWAP is a
+  *proper* time-weighted average — each recorded median is weighted by **how long it was the current
+  price**, not a naive average of samples (carry-in is clipped to the window start). Until a window has
+  enough history to cover its full span, the value is the string **`"building"`** (also signed) rather
+  than a **misleading partial number**. TWAP is served off the persisted time-series and is **API-only —
+  it is never added to the on-chain snapshot** (keeps the `SET_INFO` payload within its size limit).
+- **Persisted time-series** — each published median is recorded in **SQLite (`better-sqlite3`)** at
+  `DB_PATH`, which on the deployed host points at a **mounted volume so the TWAP window and history
+  survive restarts/redeploys**. Old rows are pruned past the longest window + a carry-in buffer. (The
+  60s spot cache is separate and in-memory — it just repopulates on the next poll.)
+- **On-chain publishing (push feed)** — the snapshot is **not** on a fixed timer. A trigger evaluator
+  publishes a fresh signed `SET_INFO` snapshot of all pairs (base64-encoded JSON in the `metadata`
+  field, chained off the account's current head, with a `generateFeeBlock` callback) when **either**:
+  - **heartbeat** — a heartbeat interval (`HEARTBEAT_SECONDS`, default **1800** = 30 min) has elapsed
+    since the last on-chain publish, **or**
+  - **deviation** — any pair's median has moved more than `DEVIATION_THRESHOLD_PCT` (default **0.5%**)
+    versus that pair's **last-published-on-chain** price (baseline persisted in SQLite, so it survives
+    restarts and only advances on a *successful* publish).
+
+  Publish frequency is bounded to cap fees: a `MIN_PUBLISH_INTERVAL_SECONDS` floor (default **60**;
+  deviation bursts are coalesced into one publish when the interval clears) and a
+  `MAX_PUBLISHES_PER_HOUR` cap (default **30**). On the very first run with no baseline it publishes
+  once to establish it.
 - **Discovery** — a second `SET_INFO` publishes discovery metadata under a custom
   `services.oracle` key (non-standard category, by design). It also declares a **volume-only fee
   schedule** (free = 100 queries/day with full signed attestation, spot price, and full history;
   paid = higher/unlimited volume) marked `beta: currently free`. This is **declared only and NOT
   enforced** by the server.
-- **Serialized publishing** — every `SET_INFO` publish (startup discovery, startup snapshot, and
-  the 5-minute timer) goes through a single in-process async mutex, and `currentHeadBlock` is
-  re-read fresh inside the critical section before each publish. This prevents two publishes from
-  overlapping and forking the account head (`LEDGER_SUCCESSOR_VOTE_EXISTS`).
+- **Serialized publishing** — every `SET_INFO` publish (startup discovery and every push-feed
+  snapshot) goes through a single in-process async mutex, and `currentHeadBlock` is re-read fresh
+  inside the critical section before each publish; a wedged head self-heals via `recover()` + retry.
+  This prevents two publishes from overlapping and forking the account head
+  (`LEDGER_SUCCESSOR_VOTE_EXISTS`).
 - **Signed responses** — every price payload is signed with anchor `SignData` over the full
   canonical tuple `[pair, quoteCurrency, price, priceScaled, priceScaleDecimals, method, sources,
   confidenceBand, confidencePct, twap1h, twap24h, timestamp]`, so the value, its provenance, its
@@ -45,9 +71,10 @@ from the CoinGecko free API, caches them in memory, publishes signed price snaps
 | Method | Path | Body | Returns |
 |--------|------|------|---------|
 | GET  | `/health`          | —                     | version, uptime, lastPriceUpdate, liveSourceCount, per-pair status |
-| POST | `/getPrice`        | `{ "pair": "KTA-USD" }` | latest median price + signed (provenance-attested) quote |
+| POST | `/getPrice`        | `{ "pair": "KTA-USD" }` | latest median price + signed (provenance-attested) quote, incl. signed `twap1h` / `twap24h` |
+| POST | `/twap`            | `{ "pair": "KTA-USD", "window": "1h" }` | time-weighted average for a single window (`1h` or `24h`), with its own signed attestation (value or `"building"`) |
 | POST | `/proof`           | `{ "pair": "KTA-USD" }` | per-source raw values + timestamps, used vs dropped, method, median, attestation |
-| POST | `/getPriceHistory` | `{ "pair": "KTA-USD", "limit": 10 }` | last N on-chain snapshots |
+| POST | `/getPriceHistory` | `{ "pair": "KTA-USD", "limit": 10 }` | last N on-chain snapshots (from the push feed) |
 
 `pair` accepts the pair (`KTA-USD`), symbol (`KTA`), or CoinGecko id (`keeta`), case-insensitive.
 Supported pairs: `KTA-USD, BTC-USD, ETH-USD, USDC-USD, EURC-USD`. (There is intentionally **no**
@@ -196,7 +223,11 @@ curl -s -X POST http://localhost:9010/getPrice \
 ```
 
 Env vars: `APP_SEED` (required, hex seed), `PORT` (default 9010), `KEETA_NETWORK`
-(default `test`; any other value → immediate exit).
+(default `test`; any other value → immediate exit), `DB_PATH` (persisted time-series location;
+default `./data/prices.sqlite`, a mounted volume on the deployed host). Push-feed tuning (all
+optional, with the defaults noted above): `HEARTBEAT_SECONDS`, `DEVIATION_THRESHOLD_PCT`,
+`MIN_PUBLISH_INTERVAL_SECONDS`, `MAX_PUBLISHES_PER_HOUR`. `OUTLIER_THRESHOLD_PCT` (default `2`) and
+`COINGECKO_API_KEY` (optional) are also honored.
 
 ## Implementation notes / gotchas respected
 

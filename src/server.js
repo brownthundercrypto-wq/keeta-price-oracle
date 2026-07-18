@@ -49,14 +49,30 @@ function landingPage() {
 <div class="wrap">
   <h1>Keeta Price Oracle <span class="muted">v${VERSION}</span></h1>
   <p class="tag">A multi-source, median-aggregated USD price feed on the <strong>Keeta testnet</strong>.
-     Every quote is <strong>cryptographically signed</strong> and independently verifiable.</p>
-  <p><span class="badge">testnet</span> &nbsp; <span class="badge">signed &amp; verifiable</span> &nbsp; <span class="badge">median of up to ${SOURCE_NAMES.length} sources</span></p>
+     Every quote — spot <em>and</em> TWAP — is <strong>cryptographically signed</strong> and independently verifiable.</p>
+  <p><span class="badge">testnet</span> &nbsp; <span class="badge">signed &amp; verifiable</span> &nbsp; <span class="badge">median of up to ${SOURCE_NAMES.length} sources</span> &nbsp; <span class="badge">1h / 24h TWAP</span> &nbsp; <span class="badge">push feed on-chain</span></p>
 
   <h2>What this is</h2>
   <p>Prices are fetched from multiple independent sources (CoinGecko, Coinbase, Kraken, CoinPaprika,
      MEXC, Bitmart), aggregated by <strong>median</strong> (≥2 live sources required, else the pair is
-     marked stale), cached, and published on-chain as signed <code>SET_INFO</code> snapshots.
+     marked stale), and published on-chain as signed <code>SET_INFO</code> snapshots.
      The oracle account is <code>${getAddress()}</code>.</p>
+
+  <h2>Manipulation-resistant pricing</h2>
+  <p>Two complementary, independently signed measures per pair: a <strong>median spot price</strong>
+     across independent venues (single-venue prints and depeg outliers are dropped before the median),
+     and proper <strong>time-weighted average prices (TWAP)</strong> over <strong>1h</strong> and
+     <strong>24h</strong> windows — each price weighted by how long it was current, not a naive sample
+     average. A window without enough history reads <code>"building"</code> (also signed) rather than a
+     <em>misleading partial number</em>. The TWAP/history time-series is <strong>persisted in SQLite on
+     a mounted volume, so it survives restarts and redeploys</strong>; the 60s spot cache is in-memory
+     and repopulates on the next poll.</p>
+
+  <h2>On-chain push feed</h2>
+  <p>On-chain snapshots are not on a fixed timer. A fresh signed snapshot of all pairs is published
+     when <strong>either</strong> a heartbeat interval elapses <strong>or</strong> a pair's median moves
+     past a deviation threshold versus its last on-chain price — bounded by a minimum interval and a
+     per-hour cap so fees stay predictable. Read them back via <code>/getPriceHistory</code>.</p>
 
   <h2>Pairs</h2>
   <p>${pairChips}</p>
@@ -66,10 +82,14 @@ function landingPage() {
     <tr><th>Endpoint</th><th>Example</th></tr>
     <tr><td><code>GET /health</code></td><td><code>curl ${base}/health</code></td></tr>
     <tr><td><code>POST /getPrice</code></td><td><code>curl -X POST ${base}/getPrice -H 'content-type: application/json' -d '{"pair":"KTA-USD"}'</code></td></tr>
+    <tr><td><code>POST /twap</code></td><td><code>curl -X POST ${base}/twap -H 'content-type: application/json' -d '{"pair":"KTA-USD","window":"1h"}'</code></td></tr>
     <tr><td><code>POST /proof</code></td><td><code>curl -X POST ${base}/proof -H 'content-type: application/json' -d '{"pair":"KTA-USD"}'</code></td></tr>
     <tr><td><code>POST /getPriceHistory</code></td><td><code>curl -X POST ${base}/getPriceHistory -H 'content-type: application/json' -d '{"pair":"KTA-USD","limit":10}'</code></td></tr>
   </table>
-  <p class="muted">${baseNote} <code>pair</code> accepts the pair, symbol, or CoinGecko id.</p>
+  <p class="muted">${baseNote} <code>pair</code> accepts the pair, symbol, or CoinGecko id.
+     <code>/getPrice</code> also returns signed <code>twap1h</code> and <code>twap24h</code> (each a
+     value or <code>"building"</code> during cold start); <code>/twap</code> returns a single window
+     (<code>1h</code> or <code>24h</code>) with its own signed attestation.</p>
 
   <h2>Signed &amp; verifiable</h2>
   <p>Every <code>/getPrice</code> response includes a <code>signedFields</code> list and an

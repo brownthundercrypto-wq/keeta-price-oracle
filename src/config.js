@@ -1,6 +1,6 @@
 // Static configuration for the price-oracle anchor. TESTNET ONLY.
 
-export const VERSION = '2.0.0'; // multi-source aggregation + signed provenance + /proof
+export const VERSION = '3.0.0'; // multi-source aggregation + signed provenance + /proof + TWAP + persisted store + push feed
 
 // Minimum number of INDEPENDENT live sources required to publish a (median) price for a pair.
 // Fewer than this -> the pair is marked stale rather than publishing a single-source number.
