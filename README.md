@@ -79,6 +79,34 @@ const ok = await VerifySignedData(oracleAccount, data, attestation);
 // ok === true; tampering ANY signed field (e.g. priceScaled alone) -> false
 ```
 
+### Standalone verifier: `verify-attestation.mjs`
+
+A **clean-room, consumer-side** proof that any third party can run. It imports **none** of this
+oracle's own code — only `@keetanetwork/keetanet-client` (`Account.fromPublicKeyString`) and
+`@keetanetwork/anchor` (`VerifySignedData`), exactly as an external integrator would. It fetches a
+fresh `/getPrice` from the live endpoint, rebuilds the oracle account from only the response's
+`oracle` pubkey, maps the response's own `signedFields` to values in order, verifies the
+attestation, and runs two tamper tests (mutating `price` alone and `priceScaled` alone — both must
+fail).
+
+```bash
+npm install                       # once, to fetch the two public packages
+node verify-attestation.mjs       # defaults to KTA-USD on the live Railway endpoint
+node verify-attestation.mjs BTC-USD https://your-host   # optional: pair + base URL
+```
+
+Expected output (live):
+
+```
+LIVE_URL=https://keeta-price-oracle-production.up.railway.app/getPrice
+PUBKEY=keeta_aaba7633k7...6h3375hly
+SIGNED_FIELDS=["pair","quoteCurrency","price","priceScaled","priceScaleDecimals","timestamp"]
+SIGNED_VALUES=["KTA-USD","USD","0.118981","11898100",8,"2026-07-18T01:55:47.143Z"]
+VERIFY=true
+VERIFY_TAMPERED_PRICE=false
+VERIFY_TAMPERED_SCALED=false
+```
+
 ## Run
 
 ```bash
