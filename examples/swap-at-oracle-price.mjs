@@ -39,6 +39,7 @@ const { UserClient } = KeetaNet;
 // ── Config (tokens verified on testnet; override via env) ────────────────────────────────────────
 const KTA_TOKEN = process.env.KTA_TOKEN || 'keeta_anyiff4v34alvumupagmdyosydeq24lc4def5mrpmmyhx3j6vj2uucckeqn52'; // 9 dp
 const BTC_TOKEN = process.env.BTC_TOKEN || 'keeta_ao47xyunmfh5jcdkm7mgrfaaddp7a2nt2xvwrph6cgurvbeixh77qkfsglgms'; // 8 dp
+const EXPLORER = 'https://explorer.test.keeta.com';
 const KTA_DP = 9n;
 const BTC_DP = 8n;
 const KTA_SCALE = 10n ** KTA_DP; // 1e9
@@ -137,11 +138,25 @@ async function main() {
   const txResult = await clientB.transmit(blocks, { generateFeeBlock: (s) => builderB.computeFeeBlock(s) });
   const voteStaple = txResult?.voteStaple;
   const stapleHash = voteStaple?.blocksHash?.toString?.() ?? null;
-  const blockHashes = (voteStaple?.blocks ?? blocks).map((b) => b.hash.toString());
+  const A_addr = A.publicKeyString.get();
+  const B_addr = B.publicKeyString.get();
+  // The per-account BLOCKS are the explorer-resolvable identifiers (the staple blocksHash is an
+  // internal aggregate that explorers do NOT index).
+  const perAccountBlocks = (voteStaple?.blocks ?? blocks).map((b) => {
+    const acct = b.account?.publicKeyString?.get?.() ?? null;
+    return { party: acct === A_addr ? 'A' : acct === B_addr ? 'B' : '?', account: acct, hash: b.hash.toString(), explorer: `${EXPLORER}/block/${b.hash.toString()}` };
+  });
   console.log(`  ✓ ATOMIC STAPLE PUBLISHED (published: ${txResult?.publish})`);
-  console.log(`    staple hash: ${stapleHash}`);
-  for (const h of blockHashes) console.log(`    block: ${h}`);
-  proof.atomicStaple = { stapleHash, published: !!txResult?.publish, blockHashes, swapRequestBlock: swapBlock.hash.toString() };
+  console.log(`    staple blocksHash (internal aggregate — NOT explorer-indexed): ${stapleHash}`);
+  console.log(`    per-account blocks (these resolve on the explorer / SDK):`);
+  for (const sb of perAccountBlocks) console.log(`      ${sb.party} ${sb.hash}`);
+  proof.atomicStaple = {
+    stapleBlocksHash: stapleHash,
+    stapleBlocksHashNote: 'Vote-staple aggregate identifier — block explorers index per-account BLOCKS + ACCOUNTS, not this. Verify via perAccountBlocks / explorer.accounts below.',
+    published: !!txResult?.publish,
+    perAccountBlocks,
+    swapRequestBlock: swapBlock.hash.toString(),
+  };
 
   // ── STEP 4 — PROOF (settled balances match the oracle rate within rounding) ────────────────────
   console.log('\n=== STEP 4 — PROOF (settled amounts vs oracle rate) ===');
@@ -175,7 +190,14 @@ async function main() {
     stapleFee_KTA_base: feeBase.toString(),
     swapLegsExact: exactSwap, impliedBtcUsd, oracleBtcUsd: btcUsd, rateErrorPct,
   };
-  proof.explorer = { base: 'https://explorer.test.keeta.com', A: A.publicKeyString.get(), B: B.publicKeyString.get() };
+  proof.explorer = {
+    base: EXPLORER,
+    accounts: { A: `${EXPLORER}/account/${A.publicKeyString.get()}`, B: `${EXPLORER}/account/${B.publicKeyString.get()}` },
+  };
+  proof.verification = {
+    readOnlyScript: `node examples/verify-swap-onchain.mjs ${A.publicKeyString.get()} ${B.publicKeyString.get()}`,
+    note: 'Authoritative, no-guess path: reads both accounts\' chains directly (no HTTP oracle, no seeds). Explorer account links load the SPA (soft-404 status but serves the app) and resolve client-side via the same node API.',
+  };
   proof.framing = 'Both accounts are one operator; this proves the mechanism (signed oracle price -> real atomic settlement), not a third-party trade.';
 
   const outPath = new URL('./swap-proof.json', import.meta.url);

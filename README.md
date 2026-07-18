@@ -220,16 +220,31 @@ signatures**, computes the cross rate, then settles **one atomic vote staple** �
 KTA to B and B sends *Y* BTC to A, where *X/Y* equals the oracle cross rate — via Keeta's native
 `createSwapRequest`/`acceptSwapRequest`. Both legs settle atomically or neither does. It saves a
 proof bundle ([`examples/swap-proof.json`](examples/swap-proof.json)) with the verified signed
-prices, the computed rate, the explorer-verifiable staple hash, and a check that the settled amounts
+prices, the computed rate, the **per-account block hashes**, and a check that the settled amounts
 match the oracle rate within rounding. A real run:
 
 ```
-KTA-USD = 0.1172… (verified: true)   BTC-USD = 64761.75 (verified: true)   1 BTC = 552,274.55 KTA
-swap: A sends 10 KTA  <->  B sends 0.00001811 BTC   (KTA 9dp, BTC 8dp, exact)
-ATOMIC STAPLE: B97CC3E4FF059CE9CC439E6CF05778E256E36A1049C54E0143FF34705067EC85  (published: true)
-swap legs EXACT: true   implied BTC-USD 64750.79 vs oracle 64761.75 (error 0.0169%)
+KTA-USD = 0.1172… (verified: true)   BTC-USD = 64771.53 (verified: true)   1 BTC = 545,795.04 KTA
+swap: A sends 10 KTA  <->  B sends 0.00001832 BTC   (KTA 9dp, BTC 8dp, exact)
+per-account blocks — A: 91AFCB9B…D8D3E2C7 (SEND 10 KTA + RECEIVE BTC),  B: 2CD93E15…B2CBFD1F (SEND BTC)
+swap legs EXACT: true   implied BTC-USD 64778.24 vs oracle 64771.53 (error 0.0104%)
 ```
-Verify the staple on the [testnet explorer](https://explorer.test.keeta.com).
+
+### Verify it yourself
+An atomic swap settles as a vote **staple**, whose `blocksHash` is an internal aggregate identifier
+that block explorers do **not** index. What *is* resolvable is each account's own **block** (by hash)
+and its **history**. Two ways to check:
+
+- **Read-only script (authoritative — no HTTP oracle, no seeds):**
+  ```bash
+  node examples/verify-swap-onchain.mjs <addressA> <addressB>
+  ```
+  It reads both accounts' chains directly from the ledger and prints the swap blocks: A's block that
+  SENDs KTA to B and RECEIVEs BTC from B, and B's block that SENDs the matching BTC to A.
+- **Explorer:** open the [testnet explorer](https://explorer.test.keeta.com) and paste an **account
+  address** (or a **block hash**) — e.g. `https://explorer.test.keeta.com/account/<addressA>`. (Deep
+  links return an HTTP 404 status but still serve the app, which resolves the address client-side via
+  the same node API.)
 
 **Honest framing.** Both accounts (A and B) are controlled by the **same operator** — the script
 holds both throwaway seeds. This demonstrates the **mechanism** (a signed oracle price driving a real

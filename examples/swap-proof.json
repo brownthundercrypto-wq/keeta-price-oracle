@@ -4,8 +4,8 @@
   "oracle": {
     "account": "keeta_aaba7633k7zfn3hhavs7xh2yd27qdmbtspi5npnkvcvz7ticezcxmv6h3375hly",
     "ktaUsd": {
-      "price": "0.11726368602034631",
-      "timestamp": "2026-07-18T23:04:40.373Z",
+      "price": "0.11867373140238362",
+      "timestamp": "2026-07-18T23:23:40.586Z",
       "verified": true,
       "signedFields": [
         "pair",
@@ -22,14 +22,14 @@
         "timestamp"
       ],
       "attestation": {
-        "nonce": "372d3d25-c2da-45b7-86a8-81f94770ac74",
-        "timestamp": "2026-07-18T23:05:22.590Z",
-        "signature": "0/1WctrNWNGzaNRsp38mCyYWbnYsMeh+kxMxJy7fO7oJYROU7RK/Qyy0MtiMJ0pe0vyGF2VsiN0QN4YKWDr6FQ=="
+        "nonce": "aa6aee55-88e1-4d85-a9a2-e38f40767878",
+        "timestamp": "2026-07-18T23:23:49.681Z",
+        "signature": "VJMrycDsWm/Avy+wNp33poR5eb+2QqhKlYBQxhrmC1Z49Opb6TfFBQv8C/w3lc2J1n1NbHqBHXfcKWOv0aaSfg=="
       }
     },
     "btcUsd": {
-      "price": "64761.75",
-      "timestamp": "2026-07-18T23:04:40.373Z",
+      "price": "64771.533453949334",
+      "timestamp": "2026-07-18T23:23:40.586Z",
       "verified": true,
       "signedFields": [
         "pair",
@@ -46,42 +46,22 @@
         "timestamp"
       ],
       "attestation": {
-        "nonce": "7f7c05fe-3a9f-44e8-b0b7-aba0ea8a0f11",
-        "timestamp": "2026-07-18T23:05:22.731Z",
-        "signature": "0FaZqjVt/Uj7quKErjwVy8djM9DTRzttYZ1Fe9EIwhwi5DeNzUOkCQO2vwE5CjiA+23ND9CverfYl0pASSxbKw=="
+        "nonce": "f55615f0-6f43-4731-ac44-4fcecec581f2",
+        "timestamp": "2026-07-18T23:23:49.820Z",
+        "signature": "b5P6ONE1vRhl4R8SZOZiWmpK1xt5zmEeORzCiToBEAlHwwc6T8dpl+GAfKw3unV0pROjxIrgOYVbZb24sgusbA=="
       }
     },
-    "crossRate_KTA_per_BTC": 552274.5548759507
+    "crossRate_KTA_per_BTC": 545795.0355865221
   },
   "swapAmounts": {
     "ktaSent": "10",
-    "btcSent": "0.00001811",
+    "btcSent": "0.00001832",
     "ktaBaseUnits": "10000000000",
-    "btcBaseUnits": "1811",
+    "btcBaseUnits": "1832",
     "ktaDecimals": 9,
     "btcDecimals": 8
   },
   "balancesBefore": {
-    "A": {
-      "kta": "30",
-      "btc": "0.00061811"
-    },
-    "B": {
-      "kta": "59.9997797",
-      "btc": "0.00070136"
-    }
-  },
-  "atomicStaple": {
-    "stapleHash": "B97CC3E4FF059CE9CC439E6CF05778E256E36A1049C54E0143FF34705067EC85",
-    "published": true,
-    "blockHashes": [
-      "874E70B2C07D5981A2F74109D9BB632A8666B6CF75876FB2D5CFA1A9A27C307E",
-      "C2982394D91A210EF3F5DDFCCAF5F52239B92AE63DEB430BFC4CA0CB6DC8826A",
-      "F731557FD18E2237C3D9753DD0949473645E6FE7654852E65DF7BD9AE971650D"
-    ],
-    "swapRequestBlock": "C2982394D91A210EF3F5DDFCCAF5F52239B92AE63DEB430BFC4CA0CB6DC8826A"
-  },
-  "balancesAfter": {
     "A": {
       "kta": "20",
       "btc": "0.00063622"
@@ -91,21 +71,63 @@
       "btc": "0.00068325"
     }
   },
+  "atomicStaple": {
+    "stapleBlocksHash": "27DCA81BDC234B466DBBD63FCCDFB0054F6469C973CE81FAFCAB493024360C0D",
+    "stapleBlocksHashNote": "Vote-staple aggregate identifier — block explorers index per-account BLOCKS + ACCOUNTS, not this. Verify via perAccountBlocks / explorer.accounts below.",
+    "published": true,
+    "perAccountBlocks": [
+      {
+        "party": "B",
+        "account": "keeta_aabvhlabhl5yuqgwtyqmbdupvahz7siavg76cabqoyd6fhn72h6ytcn6qgddc2y",
+        "hash": "2CD93E152F70B44E4D44B1E9FC7CA5B608AE4677D2A59F7249C97262B2CBFD1F",
+        "explorer": "https://explorer.test.keeta.com/block/2CD93E152F70B44E4D44B1E9FC7CA5B608AE4677D2A59F7249C97262B2CBFD1F"
+      },
+      {
+        "party": "A",
+        "account": "keeta_aabbbwy54rc4po5xksmmkwvbl2pcmiidly7563dy6aj2u6fs7tkehwbk5etuuia",
+        "hash": "91AFCB9BE654ABE00223604029DD2784582EDE0A01B49929157BF1DBD8D3E2C7",
+        "explorer": "https://explorer.test.keeta.com/block/91AFCB9BE654ABE00223604029DD2784582EDE0A01B49929157BF1DBD8D3E2C7"
+      },
+      {
+        "party": "B",
+        "account": "keeta_aabvhlabhl5yuqgwtyqmbdupvahz7siavg76cabqoyd6fhn72h6ytcn6qgddc2y",
+        "hash": "D1FFFABA5C55F96886CE3A75C53AEDFA4BCFDD030682119E098A2A7A8A59CA1B",
+        "explorer": "https://explorer.test.keeta.com/block/D1FFFABA5C55F96886CE3A75C53AEDFA4BCFDD030682119E098A2A7A8A59CA1B"
+      }
+    ],
+    "swapRequestBlock": "91AFCB9BE654ABE00223604029DD2784582EDE0A01B49929157BF1DBD8D3E2C7"
+  },
+  "balancesAfter": {
+    "A": {
+      "kta": "10",
+      "btc": "0.00065454"
+    },
+    "B": {
+      "kta": "79.9997391",
+      "btc": "0.00066493"
+    }
+  },
   "settlementCheck": {
     "A_sent_KTA_base": "10000000000",
-    "A_received_BTC_base": "1811",
-    "B_sent_BTC_base": "1811",
+    "A_received_BTC_base": "1832",
+    "B_sent_BTC_base": "1832",
     "B_received_KTA_net_base": "9999979700",
     "stapleFee_KTA_base": "20300",
     "swapLegsExact": true,
-    "impliedBtcUsd": 64750.79294331657,
-    "oracleBtcUsd": 64761.75,
-    "rateErrorPct": 0.016919025016201666
+    "impliedBtcUsd": 64778.23766505656,
+    "oracleBtcUsd": 64771.533453949334,
+    "rateErrorPct": 0.010350551777485492
   },
   "explorer": {
     "base": "https://explorer.test.keeta.com",
-    "A": "keeta_aabbbwy54rc4po5xksmmkwvbl2pcmiidly7563dy6aj2u6fs7tkehwbk5etuuia",
-    "B": "keeta_aabvhlabhl5yuqgwtyqmbdupvahz7siavg76cabqoyd6fhn72h6ytcn6qgddc2y"
+    "accounts": {
+      "A": "https://explorer.test.keeta.com/account/keeta_aabbbwy54rc4po5xksmmkwvbl2pcmiidly7563dy6aj2u6fs7tkehwbk5etuuia",
+      "B": "https://explorer.test.keeta.com/account/keeta_aabvhlabhl5yuqgwtyqmbdupvahz7siavg76cabqoyd6fhn72h6ytcn6qgddc2y"
+    }
+  },
+  "verification": {
+    "readOnlyScript": "node examples/verify-swap-onchain.mjs keeta_aabbbwy54rc4po5xksmmkwvbl2pcmiidly7563dy6aj2u6fs7tkehwbk5etuuia keeta_aabvhlabhl5yuqgwtyqmbdupvahz7siavg76cabqoyd6fhn72h6ytcn6qgddc2y",
+    "note": "Authoritative, no-guess path: reads both accounts' chains directly (no HTTP oracle, no seeds). Explorer account links load the SPA (soft-404 status but serves the app) and resolve client-side via the same node API."
   },
   "framing": "Both accounts are one operator; this proves the mechanism (signed oracle price -> real atomic settlement), not a third-party trade."
 }
