@@ -26,18 +26,45 @@ export function toPriceScaled(n) {
   return String(Math.round(n * 10 ** PRICE_SCALE_DECIMALS));
 }
 
-function median(nums) {
+// Median of a list of numbers. Odd count -> middle element; even count -> mean of the two middle
+// values. Input is copied before sorting (does not mutate the caller's array). Pure; exported for tests.
+export function median(nums) {
   const s = [...nums].sort((a, b) => a - b);
   const m = Math.floor(s.length / 2);
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
 
-// Population standard deviation (agreement measure over the surviving sources).
-function stddev(nums) {
+// Population standard deviation (agreement measure over the surviving sources). Pure; exported for tests.
+export function stddev(nums) {
   const n = nums.length;
   if (!n) return 0;
   const mean = nums.reduce((a, b) => a + b, 0) / n;
   return Math.sqrt(nums.reduce((a, b) => a + (b - mean) ** 2, 0) / n);
+}
+
+// Confidence from a set of prices: absolute agreement band (population std-dev, price units) plus
+// the relative band as a percent of the median. Pure; exported for tests.
+export function computeConfidence(prices) {
+  const band = stddev(prices);
+  const med = median(prices);
+  const pct = med > 0 ? (band / med) * 100 : 0;
+  return { band, pct };
+}
+
+// Outlier guard: partition live source rows into survivors vs outliers by deviation from the median
+// center. A row deviating more than `threshold` (fraction) from the center is an outlier; each
+// outlier row is copied with its raw deviation fraction `dev`. Pure (no string formatting); exported
+// for tests. Callers recompute the published median over `survivors`.
+export function guardOutliers(used, threshold) {
+  const center = median(used.map((u) => u.price));
+  const survivors = [];
+  const outliers = [];
+  for (const u of used) {
+    const dev = center > 0 ? Math.abs(u.price - center) / center : 0;
+    if (dev > threshold) outliers.push({ ...u, dev });
+    else survivors.push(u);
+  }
+  return { center, survivors, outliers };
 }
 
 // Round-then-stringify so a stable, deterministic string is signed (computed once per poll, cached).
@@ -77,17 +104,8 @@ export async function pollOnce() {
     }
 
     // Deviation guard: drop any live source more than OUTLIER_THRESHOLD from the median center.
-    const center = median(used.map((u) => u.price));
-    const survivors = [];
-    const outliers = [];
-    for (const u of used) {
-      const dev = center > 0 ? Math.abs(u.price - center) / center : 0;
-      if (dev > OUTLIER_THRESHOLD) {
-        outliers.push({ name: u.name, price: toDecimalString(u.price), ts: u.ts, quote: u.quote, type: 'outlier', deviationPct: fixed(dev * 100, 4) });
-      } else {
-        survivors.push(u);
-      }
-    }
+    const { survivors, outliers: outlierRows } = guardOutliers(used, OUTLIER_THRESHOLD);
+    const outliers = outlierRows.map((u) => ({ name: u.name, price: toDecimalString(u.price), ts: u.ts, quote: u.quote, type: 'outlier', deviationPct: fixed(u.dev * 100, 4) }));
 
     const survivorReports = survivors.map((u) => ({ name: u.name, price: toDecimalString(u.price), ts: u.ts, quote: u.quote }));
     const droppedSources = [...unreachable, ...outliers];
@@ -101,8 +119,7 @@ export async function pollOnce() {
     // Recompute the median over survivors; derive confidence from their agreement.
     const survPrices = survivors.map((u) => u.price);
     const med = median(survPrices);
-    const band = stddev(survPrices); // absolute, price units
-    const pct = med > 0 ? (band / med) * 100 : 0; // relative %
+    const { band, pct } = computeConfidence(survPrices); // absolute band (price units) + relative %
     const usedNames = survivors.map((u) => u.name); // already name-sorted -> deterministic
 
     // Persist the published median for TWAP (API-only; never goes on-chain).

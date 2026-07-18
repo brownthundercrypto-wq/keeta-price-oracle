@@ -1,5 +1,7 @@
 # price-oracle-anchor (Keeta, TESTNET ONLY)
 
+[![CI](https://github.com/brownthundercrypto-wq/keeta-price-oracle/actions/workflows/ci.yml/badge.svg)](https://github.com/brownthundercrypto-wq/keeta-price-oracle/actions/workflows/ci.yml)
+
 A price-feed oracle anchor built on the AnchorFactory FX-anchor pattern. It pulls USD prices from
 **up to six independent sources**, aggregates them by **median**, and serves signed (attested)
 quotes over HTTP — both **spot** and **time-weighted (TWAP)**. The latest spot price is kept in an
@@ -205,6 +207,26 @@ VERIFY_TAMPERED_SOURCES=false
 VERIFY_TAMPERED_CONFIDENCE=false
 VERIFY_TAMPERED_TWAP1H=false
 ```
+
+## Tests & CI
+
+A hermetic unit suite (Node's built-in runner — `node:test` + `node:assert`, no extra deps) covers
+the core logic with **no network, no chain writes, and no real seed**: sources are represented by
+plain arrays, the time-series uses an in-memory SQLite, and signing uses a throwaway keypair
+generated in-test.
+
+```bash
+npm test        # node --test  -> runs everything under test/
+```
+
+Coverage (`test/`): median (odd/even/single/unsorted), decimal ↔ `priceScaled` round-trip, the
+outlier guard + stale (never single-source) + confidence, TWAP time-weighting (uneven durations,
+carry-in clipped to the window start, cold-start `"building"`), sign/verify with per-field tamper
+tests, the on-chain snapshot size guard (`< 5000`), and the push-feed trigger logic (deviation,
+heartbeat, min-interval coalescing, per-hour cap, first-run baseline).
+
+**CI:** [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs `npm ci && npm test` on Node
+22.x for every push and pull request (see the badge at the top). No secrets, no deploy.
 
 ## Run
 

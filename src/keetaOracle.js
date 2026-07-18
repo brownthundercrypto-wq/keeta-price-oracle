@@ -140,7 +140,7 @@ function publishSetInfo(name, description, obj) {
 // Build the minimal on-chain snapshot object. TWAP is deliberately NOT included here — it is
 // API-only. Kept compact (name+price per source) to stay within the ~5464-char SET_INFO metadata
 // limit. Exported so the payload size can be measured before deploy.
-export function buildSnapshotMetadata(prices, timestamp) {
+export function buildSnapshotMetadata(prices, timestamp, oracleAddress = getAddress()) {
   const compact = {};
   for (const [pair, e] of Object.entries(prices)) {
     compact[pair] = {
@@ -160,7 +160,7 @@ export function buildSnapshotMetadata(prices, timestamp) {
   }
   return {
     type: 'price-snapshot',
-    oracle: getAddress(),
+    oracle: oracleAddress,
     network: 'test',
     base: 'usd',
     aggregation: 'median',
@@ -170,8 +170,9 @@ export function buildSnapshotMetadata(prices, timestamp) {
 }
 
 // The base64 length of the SET_INFO metadata for a given snapshot (must stay under ~5464).
-export function snapshotMetadataLength(prices, timestamp) {
-  return Buffer.from(JSON.stringify(buildSnapshotMetadata(prices, timestamp))).toString('base64').length;
+// `oracleAddress` defaults to the live identity; tests may pass a throwaway address to stay hermetic.
+export function snapshotMetadataLength(prices, timestamp, oracleAddress = getAddress()) {
+  return Buffer.from(JSON.stringify(buildSnapshotMetadata(prices, timestamp, oracleAddress))).toString('base64').length;
 }
 
 // Publish the current price snapshot as an on-chain SET_INFO block.

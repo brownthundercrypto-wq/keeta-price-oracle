@@ -1,0 +1,27 @@
+name: CI
+
+# Run the hermetic test suite on every push and pull request. No secrets, no network at test time
+# (tests mock sources + use in-memory SQLite and a throwaway keypair), no deploy.
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: node --test (Node 22.x)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test

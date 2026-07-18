@@ -30,6 +30,15 @@ const MIN_INTERVAL_MS = MIN_PUBLISH_INTERVAL_SECONDS * 1000;
 const DEVIATION_FRACTION = DEVIATION_THRESHOLD_PCT / 100;
 const HOUR_MS = 3_600_000;
 
+// Resolved trigger thresholds the runtime uses. `decidePublish` defaults to these; tests pass their
+// own cfg to exercise specific heartbeat / deviation / bound scenarios.
+const DECISION_DEFAULTS = {
+  heartbeatMs: HEARTBEAT_MS,
+  deviationFraction: DEVIATION_FRACTION,
+  minIntervalMs: MIN_INTERVAL_MS,
+  maxPerHour: MAX_PUBLISHES_PER_HOUR,
+};
+
 const META_LAST_PUBLISH_TS = 'last_publish_ts';
 
 // Rolling window of recent publish timestamps (ms) for the per-hour cap. In-memory: the cap is a
@@ -63,6 +72,50 @@ function pricedPairs(cache) {
   return out;
 }
 
+// PURE trigger decision (no I/O). Given the currently-priced pairs, the persisted per-pair baselines,
+// the last on-chain publish time, and how many publishes landed in the last hour, decide whether to
+// publish now. Returns { publish, reason, firstRun, triggerHeartbeat, triggerDeviation, breached,
+// deferred?, rateCapped? }. Mirrors the runtime evaluator exactly; exported for tests.
+//   (a) HEARTBEAT  — elapsed since the last publish (or never published).
+//   (b) DEVIATION  — any priced pair moved > threshold vs its last on-chain price; a priced pair with
+//                    NO baseline yet is also "due" so it lands on-chain.
+// First run (no baseline at all) always publishes to establish the baseline (bounds don't apply).
+// Otherwise, frequency floor coalesces bursts and the per-hour cap blocks — in that order.
+export function decidePublish(
+  { priced, baselines = {}, lastPublishTs = null, now, recentPublishCount = 0 },
+  cfg = DECISION_DEFAULTS,
+) {
+  const { heartbeatMs, deviationFraction, minIntervalMs, maxPerHour } = cfg;
+  if (!priced || !Object.keys(priced).length) return { publish: false, reason: 'no-priced-pairs', breached: [] };
+
+  const firstRun = Object.keys(baselines).length === 0;
+  const heartbeatElapsed = lastPublishTs == null || now - lastPublishTs >= heartbeatMs;
+
+  const breached = [];
+  for (const [pair, price] of Object.entries(priced)) {
+    const b = baselines[pair];
+    if (!b || !(b.price > 0)) {
+      if (!firstRun) breached.push({ pair, reason: 'no-baseline', from: b?.price ?? null, to: price });
+      continue;
+    }
+    const dev = Math.abs(price - b.price) / b.price;
+    if (dev > deviationFraction) breached.push({ pair, reason: 'moved', from: b.price, to: price, devPct: +(dev * 100).toFixed(4) });
+  }
+
+  const triggerHeartbeat = !firstRun && heartbeatElapsed;
+  const triggerDeviation = breached.length > 0;
+  const base = { firstRun, triggerHeartbeat, triggerDeviation, breached };
+
+  if (!firstRun && !triggerHeartbeat && !triggerDeviation) return { publish: false, reason: 'no-trigger', ...base };
+  // Frequency floor (coalesce). Never blocks the first-ever publish. Because HEARTBEAT >= MIN interval,
+  // this can only ever defer a deviation-triggered publish — exactly the burst case.
+  if (!firstRun && lastPublishTs != null && now - lastPublishTs < minIntervalMs) return { publish: false, reason: 'coalesced', deferred: true, ...base };
+  // Per-hour fee cap (also never blocks the first-ever publish).
+  if (!firstRun && recentPublishCount >= maxPerHour) return { publish: false, reason: 'rate-capped', rateCapped: true, ...base };
+
+  return { publish: true, reason: 'publish', ...base };
+}
+
 // Decide + publish. Safe to call on a timer: never throws (errors are logged, baseline untouched).
 // Returns the trigger reason string when it published, or null when it didn't.
 export async function evaluateAndMaybePublish(nowMs = Date.now()) {
@@ -76,53 +129,27 @@ export async function evaluateAndMaybePublish(nowMs = Date.now()) {
       return null;
     }
 
-    const baselines = getAllLastPublished();
-    const firstRun = Object.keys(baselines).length === 0;
     const lastTs = lastPublishTs();
+    const decision = decidePublish({
+      priced,
+      baselines: getAllLastPublished(),
+      lastPublishTs: lastTs,
+      now: nowMs,
+      recentPublishCount: recentPublishCount(nowMs),
+    });
+    const { breached, triggerHeartbeat, triggerDeviation, firstRun } = decision;
 
-    // (a) Heartbeat: elapsed since last on-chain publish (or never published).
-    const heartbeatElapsed = lastTs == null || nowMs - lastTs >= HEARTBEAT_MS;
-
-    // (b) Deviation: any priced pair moved > threshold vs its last on-chain price. A currently-priced
-    //     pair with NO baseline yet (never published) is also "due" so it gets onto the chain.
-    const breached = [];
-    for (const [pair, price] of Object.entries(priced)) {
-      const b = baselines[pair];
-      if (!b || !(b.price > 0)) {
-        if (!firstRun) breached.push({ pair, reason: 'no-baseline', from: b?.price ?? null, to: price });
-        continue;
+    if (!decision.publish) {
+      if (decision.deferred) {
+        const waitS = Math.ceil((MIN_INTERVAL_MS - (nowMs - lastTs)) / 1000);
+        console.log(
+          `[push] trigger active (${triggerDeviation ? 'deviation' : 'heartbeat'}) but within min interval; ` +
+            `coalescing — will publish in ~${waitS}s. breached=${breached.map((b) => b.pair).join(',') || 'none'}`,
+        );
+      } else if (decision.rateCapped) {
+        console.warn(`[push] rate cap hit: ${recentPublishCount(nowMs)}/${MAX_PUBLISHES_PER_HOUR} publishes in the last hour; skipping this trigger`);
       }
-      const dev = Math.abs(price - b.price) / b.price;
-      if (dev > DEVIATION_FRACTION) {
-        breached.push({ pair, reason: 'moved', from: b.price, to: price, devPct: +(dev * 100).toFixed(4) });
-      }
-    }
-
-    const triggerHeartbeat = !firstRun && heartbeatElapsed;
-    const triggerDeviation = breached.length > 0;
-
-    if (!firstRun && !triggerHeartbeat && !triggerDeviation) {
-      return null; // no trigger active
-    }
-
-    // Frequency floor (coalesce). Never blocks the first-ever publish. Because HEARTBEAT >= MIN
-    // interval, this can only ever defer a deviation-triggered publish — exactly the burst case.
-    if (!firstRun && lastTs != null && nowMs - lastTs < MIN_INTERVAL_MS) {
-      const waitS = Math.ceil((MIN_INTERVAL_MS - (nowMs - lastTs)) / 1000);
-      console.log(
-        `[push] trigger active (${triggerDeviation ? 'deviation' : 'heartbeat'}) but within min interval; ` +
-          `coalescing — will publish in ~${waitS}s. breached=${breached.map((b) => b.pair).join(',') || 'none'}`,
-      );
       return null;
-    }
-
-    // Per-hour fee cap (also never blocks the first-ever publish).
-    if (!firstRun) {
-      const count = recentPublishCount(nowMs);
-      if (count >= MAX_PUBLISHES_PER_HOUR) {
-        console.warn(`[push] rate cap hit: ${count}/${MAX_PUBLISHES_PER_HOUR} publishes in the last hour; skipping this trigger`);
-        return null;
-      }
     }
 
     // Compose the human-readable trigger reason for the log.

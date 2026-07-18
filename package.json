@@ -8,7 +8,8 @@
     "node": "22.x"
   },
   "scripts": {
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "test": "node --test"
   },
   "dependencies": {
     "@keetanetwork/anchor": "0.0.60",
