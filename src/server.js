@@ -4,7 +4,7 @@ import { getCache, toDecimalString, toPriceScaled } from './priceFeed.js';
 import { attest, getAddress, getOnChainHistory } from './keetaOracle.js';
 import { ASSETS, PRICE_SCALE_DECIMALS, MIN_SOURCES, VERSION, PUBLIC_URL, OUTLIER_THRESHOLD, TWAP_WINDOWS } from './config.js';
 import { SOURCE_NAMES } from './sources.js';
-import { computeTwap } from './timeseries.js';
+import { computeTwap, recentHistory } from './timeseries.js';
 import { createRateLimiter } from './rateLimit.js';
 import { getLastPublish } from './pushFeed.js';
 import { buildDashboardData, dashboardPage } from './dashboard.js';
@@ -263,10 +263,13 @@ export function createServer() {
         twap1h: twapField(pair, TWAP_WINDOWS['1h'], nowMs).signed,
         twap24h: twapField(pair, TWAP_WINDOWS['24h'], nowMs).signed,
       });
+      // ~last 1h of persisted median prices, downsampled to <=60 points (for the sparkline).
+      const historyResolver = (pair) => recentHistory(pair, TWAP_WINDOWS['1h'], 60, nowMs);
       const data = buildDashboardData({
         prices: cache.prices,
         oracle: getAddress(),
         twapResolver,
+        historyResolver,
         onchain: getLastPublish(),
         nowIso: new Date(nowMs).toISOString(),
       });

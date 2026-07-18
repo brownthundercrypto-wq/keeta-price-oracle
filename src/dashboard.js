@@ -10,8 +10,9 @@ const REPO_URL = 'https://github.com/brownthundercrypto-wq/keeta-price-oracle';
 const VERIFY_URL = `${REPO_URL}/blob/main/verify-attestation.mjs`;
 
 // Assemble the all-pairs dashboard payload. `twapResolver(pair)` -> { twap1h, twap24h } (value or
-// "building"); `onchain` = latest publish { blockHash, publishedAt, trigger, reason } | null.
-export function buildDashboardData({ prices = {}, oracle, twapResolver, onchain = null, nowIso }) {
+// "building"); `historyResolver(pair)` -> [{ t, price }] recent downsampled prices (for the
+// sparkline); `onchain` = latest publish { blockHash, publishedAt, trigger, reason } | null.
+export function buildDashboardData({ prices = {}, oracle, twapResolver, historyResolver, onchain = null, nowIso }) {
   const pairs = [];
   const liveSources = new Set();
   let lastPriceUpdate = null;
@@ -35,6 +36,7 @@ export function buildDashboardData({ prices = {}, oracle, twapResolver, onchain 
     const sources = [...used, ...dropped].sort((a, b) => a.name.localeCompare(b.name));
 
     const twap = twapResolver ? twapResolver(e.pair) : { twap1h: null, twap24h: null };
+    const history = historyResolver ? historyResolver(e.pair) || [] : [];
     pairs.push({
       pair: e.pair,
       symbol: e.symbol,
@@ -51,6 +53,7 @@ export function buildDashboardData({ prices = {}, oracle, twapResolver, onchain 
       twap24h: twap.twap24h ?? null,
       updatedAt: e.updatedAt ?? null,
       sources,
+      history, // recent downsampled [{ t, price }] for the sparkline
     });
   }
 
@@ -103,6 +106,8 @@ export function dashboardPage() {
   .card h2 { font-size: 1.05rem; margin: 0 0 2px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .price { font-size: 1.7rem; font-weight: 650; margin: 6px 0 2px; }
   .price .q { font-size: 0.9rem; color: #8b93a7; font-weight: 400; }
+  svg.spark { width: 100%; height: 44px; display: block; margin: 4px 0 8px; }
+  .spark.building { height: 44px; display: flex; align-items: center; color: #6b7180; font-size: 0.78rem; font-style: italic; }
   .row { display: flex; justify-content: space-between; gap: 10px; padding: 3px 0; color: #c7ccd6; }
   .row .k { color: #8b93a7; }
   .badge { font-size: 0.7rem; padding: 2px 8px; border-radius: 999px; border: 1px solid; }
@@ -158,6 +163,35 @@ export function dashboardPage() {
   function fmtTime(iso){ if(!iso) return '—'; try { return new Date(iso).toLocaleString(); } catch(e){ return iso; } }
   function ago(iso){ if(!iso) return ''; var s=Math.max(0,Math.round((Date.now()-new Date(iso).getTime())/1000)); return s<60? s+'s ago' : Math.round(s/60)+'m ago'; }
 
+  // Inline-SVG sparkline: price line colored by net direction, a dashed TWAP1h reference line, and
+  // a marked latest point. No chart library. Cold start (<2 points) -> "building history".
+  function sparkline(p){
+    var h = (p.history || []).filter(function(d){ return d && d.price != null; });
+    if(h.length < 2) return '<div class="spark building">building history…</div>';
+    var W = 260, H = 44, PAD = 4;
+    var prices = h.map(function(d){ return d.price; });
+    var twapNum = parseFloat(p.twap1h);
+    var twap = (p.twap1h != null && p.twap1h !== 'building' && !isNaN(twapNum)) ? twapNum : null;
+    var lo = Math.min.apply(null, prices), hi = Math.max.apply(null, prices);
+    if(twap != null){ lo = Math.min(lo, twap); hi = Math.max(hi, twap); }
+    if(hi === lo){ hi = lo + (Math.abs(lo) || 1) * 1e-6; } // flat -> avoid divide-by-zero
+    var t0 = h[0].t, t1 = h[h.length-1].t, tspan = (t1 - t0) || 1;
+    function X(t){ return (PAD + (W - 2*PAD) * ((t - t0) / tspan)); }
+    function Y(v){ return (PAD + (H - 2*PAD) * (1 - (v - lo) / (hi - lo))); }
+    var pts = h.map(function(d){ return X(d.t).toFixed(1) + ',' + Y(d.price).toFixed(1); }).join(' ');
+    var up = prices[prices.length-1] >= prices[0];
+    var color = up ? '#7ee2a8' : '#f79a9a';
+    var last = h[h.length-1];
+    var twapLine = twap != null
+      ? '<line x1="'+PAD+'" y1="'+Y(twap).toFixed(1)+'" x2="'+(W-PAD)+'" y2="'+Y(twap).toFixed(1)+'" stroke="#5b6472" stroke-width="1" stroke-dasharray="3 3"/>'
+      : '';
+    return '<svg class="spark" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" role="img" aria-label="'+esc(p.pair)+' recent price history">'
+      + twapLine
+      + '<polyline points="'+pts+'" fill="none" stroke="'+color+'" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>'
+      + '<circle cx="'+X(last.t).toFixed(1)+'" cy="'+Y(last.price).toFixed(1)+'" r="2.6" fill="'+color+'"/>'
+      + '</svg>';
+  }
+
   function sourceRow(s){
     var cls = s.status==='used' ? 'src-used' : (s.status==='outlier' ? 'src-outlier' : 'src-unreachable');
     var detail = s.status==='outlier' ? ('dropped · '+esc(s.deviationPct)+'% off')
@@ -175,6 +209,7 @@ export function dashboardPage() {
     return '<div class="card">'
       + '<h2>'+esc(p.pair)+' '+badge+'</h2>'
       + '<div class="price">'+price+' <span class="q">'+esc(p.quoteCurrency)+'</span></div>'
+      + sparkline(p)
       + '<div class="row"><span class="k">confidence</span><span>±'+esc(p.confidenceBand==null?'—':p.confidenceBand)+' ('+esc(p.confidencePct==null?'—':p.confidencePct)+'%)</span></div>'
       + '<div class="row"><span class="k">TWAP 1h</span><span>'+esc(p.twap1h==null?'—':p.twap1h)+'</span></div>'
       + '<div class="row"><span class="k">TWAP 24h</span><span>'+esc(p.twap24h==null?'—':p.twap24h)+'</span></div>'

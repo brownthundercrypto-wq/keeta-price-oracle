@@ -6,7 +6,7 @@ import { dirname } from 'path';
 import { DB_PATH, TWAP_RETENTION_MS } from './config.js';
 
 let db = null;
-let stmtInsert, stmtSince, stmtCarry, stmtOldest, stmtPrune;
+let stmtInsert, stmtRange, stmtSince, stmtCarry, stmtOldest, stmtPrune;
 // Push-feed state (baseline per pair + global meta). See getLastPublished/setLastPublished below.
 let stmtLastGet, stmtLastAll, stmtLastUpsert, stmtMetaGet, stmtMetaSet;
 
@@ -22,6 +22,7 @@ export function initTimeseries(path = DB_PATH) {
   // Small key/value store for global push-feed state (e.g. last_publish_ts for heartbeat/min-interval).
   db.exec('CREATE TABLE IF NOT EXISTS oracle_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
   stmtInsert = db.prepare('INSERT INTO prices (pair, ts, price) VALUES (?, ?, ?)');
+  stmtRange = db.prepare('SELECT ts, price FROM prices WHERE pair = ? AND ts >= ? AND ts <= ? ORDER BY ts ASC');
   stmtSince = db.prepare('SELECT ts, price FROM prices WHERE pair = ? AND ts > ? ORDER BY ts ASC');
   stmtCarry = db.prepare('SELECT ts, price FROM prices WHERE pair = ? AND ts <= ? ORDER BY ts DESC LIMIT 1');
   stmtOldest = db.prepare('SELECT MIN(ts) AS ts FROM prices WHERE pair = ?');
@@ -83,6 +84,29 @@ export function computeTwap(pair, windowMs, nowMs = Date.now()) {
   }
   const value = dur > 0 ? weighted / dur : carry.price;
   return { status: 'ready', value, haveMs, windowMs, samples: inWindow.length + 1 };
+}
+
+// Recent recorded median prices for a pair over [now - windowMs, now], DOWNSAMPLED to at most
+// `maxPoints` evenly-spaced samples (always including the first and last) so the dashboard sparkline
+// payload stays small. Reads the existing time-series — no new polling or storage. Returns an
+// ascending [{ t, price }] (t = epoch ms). Empty array when there is no history yet.
+export function recentHistory(pair, windowMs, maxPoints = 60, nowMs = Date.now()) {
+  if (!db || !(maxPoints > 0)) return [];
+  const rows = stmtRange.all(pair, Math.floor(nowMs - windowMs), Math.floor(nowMs));
+  if (rows.length <= maxPoints) return rows.map((r) => ({ t: r.ts, price: r.price }));
+
+  // Downsample: pick maxPoints indices evenly across [0, n-1]; dedupe rounding collisions. The last
+  // index (n-1) is always hit at i = maxPoints-1, so the latest point is preserved.
+  const step = (rows.length - 1) / (maxPoints - 1);
+  const out = [];
+  const seen = new Set();
+  for (let i = 0; i < maxPoints; i++) {
+    const idx = Math.min(rows.length - 1, Math.round(i * step));
+    if (seen.has(idx)) continue;
+    seen.add(idx);
+    out.push({ t: rows[idx].ts, price: rows[idx].price });
+  }
+  return out;
 }
 
 // ── On-chain PUSH feed: last-published-on-chain baseline (per pair) + global meta ────────────────
