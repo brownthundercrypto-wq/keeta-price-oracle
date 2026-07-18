@@ -74,6 +74,19 @@ export const ALERT_REALERT_MINUTES = intEnv('ALERT_REALERT_MINUTES', 60);
 // How often the health monitor evaluates conditions (well under the ~60s detection goal).
 export const MONITOR_INTERVAL_MS = 30_000;
 
+// ── API rate limiting (abuse protection) ─────────────────────────────────────────────────────────
+// Additive: token-bucket limiter on the POST endpoints only. Defaults are generous — a human
+// curling or a dashboard polling is never limited; only hammering gets 429'd. GET / and /health are
+// EXEMPT (so UptimeRobot + the monitor are never throttled). Per-IP protects fairness; the global
+// cap protects the instance (and bounds abuse even if a client spoofs X-Forwarded-For).
+// Per-client-IP sustained rate (requests/minute) once the burst is spent. Default 60 (1/sec).
+export const RATE_LIMIT_PER_MIN = intEnv('RATE_LIMIT_PER_MIN', 60);
+// Per-client-IP burst: how many requests a client may make back-to-back before throttling. Default 30.
+export const RATE_LIMIT_BURST = intEnv('RATE_LIMIT_BURST', 30);
+// Instance-wide cap across ALL clients (requests/minute). Default 600 (10/sec). Its burst capacity is
+// a full minute's worth.
+export const RATE_LIMIT_GLOBAL_PER_MIN = intEnv('RATE_LIMIT_GLOBAL_PER_MIN', 600);
+
 // TWAP (time-weighted average price) — API-only, NEVER added to the on-chain snapshot.
 export const TWAP_WINDOWS = { '1h': 3_600_000, '24h': 86_400_000 };
 export const TWAP_LONGEST_MS = Math.max(...Object.values(TWAP_WINDOWS));

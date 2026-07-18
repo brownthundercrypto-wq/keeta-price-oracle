@@ -5,6 +5,7 @@ import { attest, getAddress, getOnChainHistory } from './keetaOracle.js';
 import { ASSETS, PRICE_SCALE_DECIMALS, MIN_SOURCES, VERSION, PUBLIC_URL, OUTLIER_THRESHOLD, TWAP_WINDOWS } from './config.js';
 import { SOURCE_NAMES } from './sources.js';
 import { computeTwap } from './timeseries.js';
+import { createRateLimiter } from './rateLimit.js';
 
 const START_TIME = new Date().toISOString();
 const REPO_URL = 'https://github.com/brownthundercrypto-wq/keeta-price-oracle';
@@ -203,7 +204,12 @@ export function createServer() {
   const app = express();
   app.use(express.json());
 
-  // Landing page (human-facing) at root.
+  // Abuse protection: token-bucket rate limiter applied ONLY to the POST API endpoints below.
+  // GET / and GET /health are deliberately NOT wrapped, so the landing page stays cheap and
+  // UptimeRobot + the internal monitor are never throttled.
+  const limit = createRateLimiter();
+
+  // Landing page (human-facing) at root. Exempt from rate limiting.
   app.get('/', (_req, res) => {
     res.type('html').send(landingPage());
   });
@@ -241,7 +247,7 @@ export function createServer() {
   });
 
   // POST /getPrice { pair } -> latest median price + signed (provenance-attested) quote
-  app.post('/getPrice', async (req, res) => {
+  app.post('/getPrice', limit, async (req, res) => {
     try {
       const entry = resolvePrice(req.body?.pair);
       if (!entry) {
@@ -291,7 +297,7 @@ export function createServer() {
 
   // POST /proof { pair } -> exactly where the price came from: per-source raw values + timestamps,
   // which sources were used vs dropped, the aggregation method, the final median, + the attestation.
-  app.post('/proof', async (req, res) => {
+  app.post('/proof', limit, async (req, res) => {
     try {
       const entry = resolvePrice(req.body?.pair);
       if (!entry) {
@@ -342,7 +348,7 @@ export function createServer() {
   });
 
   // POST /twap { pair, window } -> time-weighted average price for a window (default 1h), signed.
-  app.post('/twap', async (req, res) => {
+  app.post('/twap', limit, async (req, res) => {
     try {
       const entry = resolvePrice(req.body?.pair);
       if (!entry) {
@@ -381,7 +387,7 @@ export function createServer() {
   });
 
   // POST /getPriceHistory { pair, limit } -> last N on-chain snapshots
-  app.post('/getPriceHistory', async (req, res) => {
+  app.post('/getPriceHistory', limit, async (req, res) => {
     try {
       const limit = Math.max(1, Math.min(50, parseInt(req.body?.limit ?? 10, 10)));
       const pairInput = req.body?.pair;

@@ -223,8 +223,9 @@ Coverage (`test/`): median (odd/even/single/unsorted), decimal ↔ `priceScaled`
 outlier guard + stale (never single-source) + confidence, TWAP time-weighting (uneven durations,
 carry-in clipped to the window start, cold-start `"building"`), sign/verify with per-field tamper
 tests, the on-chain snapshot size guard (`< 5000`), the push-feed trigger logic (deviation,
-heartbeat, min-interval coalescing, per-hour cap, first-run baseline), and the **alert decision
-logic** (transition-only firing, no re-fire while bad, recovery, cooldown reminder).
+heartbeat, min-interval coalescing, per-hour cap, first-run baseline), the **alert decision logic**
+(transition-only firing, no re-fire while bad, recovery, cooldown reminder), and the **rate limiter**
+(allow under limit, block over, refill over time, per-IP isolation, global cap, XFF parsing).
 
 **CI:** [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs `npm ci && npm test` on Node
 22.x for every push and pull request (see the badge at the top). No secrets, no deploy.
@@ -271,6 +272,35 @@ breach of the `liveSourceCount` floor does.
    The payload is Discord-format `{"content":"…"}`; a `[keeta-price-oracle testnet] ✅ TEST alert …`
    message appears in the channel.
 
+## Rate limiting (abuse protection)
+
+The POST API endpoints are rate-limited with a **token bucket** so the public endpoints can't be
+hammered — without breaking the open "just curl it" experience. Defaults are generous: a human
+curling, or a dashboard polling every few seconds, is **never** limited; only sustained hammering
+gets `429`'d.
+
+- **Per client IP** — sustained `RATE_LIMIT_PER_MIN` requests/min with bursts up to
+  `RATE_LIMIT_BURST`. The client IP is read from the **`X-Forwarded-For`** header (originating
+  client = leftmost entry) since the service runs behind Railway's proxy; a missing header falls back
+  to the socket address safely.
+- **Global** — an instance-wide cap of `RATE_LIMIT_GLOBAL_PER_MIN` requests/min across all clients,
+  so the instance is protected even if a client spoofs its `X-Forwarded-For`.
+- **Applies to:** `POST /getPrice`, `/proof`, `/twap`, `/getPriceHistory`. **Exempt:** `GET /` and
+  `GET /health` (so UptimeRobot + the internal monitor are never throttled).
+- **On limit:** `HTTP 429` + a `Retry-After: <seconds>` header + a small JSON body
+  `{ "ok": false, "error": "rate limited: …", "retryAfter": <seconds> }` (no internals leaked).
+
+The limiter state is **in-memory**, which is correct for the current single-instance deploy
+(`numReplicas: 1`). Fully-replenished buckets are pruned so memory can't grow unbounded. A
+multi-instance deploy (Tier 3) would need **shared state (e.g. Redis)** to enforce limits across
+replicas.
+
+| Var | Purpose |
+|---|---|
+| `RATE_LIMIT_PER_MIN` | per-IP sustained requests/min (`60`) |
+| `RATE_LIMIT_BURST` | per-IP burst allowance (`30`) |
+| `RATE_LIMIT_GLOBAL_PER_MIN` | instance-wide cap across all clients (`600`) |
+
 ## Run
 
 ```bash
@@ -294,6 +324,8 @@ optional, with the defaults noted above): `HEARTBEAT_SECONDS`, `DEVIATION_THRESH
 `MIN_PUBLISH_INTERVAL_SECONDS`, `MAX_PUBLISHES_PER_HOUR`. `OUTLIER_THRESHOLD_PCT` (default `2`) and
 `COINGECKO_API_KEY` (optional) are also honored. Monitoring/alerting (see **Monitoring & alerts**):
 `ALERT_WEBHOOK_URL` (secret), `ALERT_MIN_SOURCES`, `ALERT_DISAGREEMENT_PCT`, `ALERT_REALERT_MINUTES`.
+Rate limiting (see **Rate limiting**): `RATE_LIMIT_PER_MIN`, `RATE_LIMIT_BURST`,
+`RATE_LIMIT_GLOBAL_PER_MIN`.
 
 ## Implementation notes / gotchas respected
 
