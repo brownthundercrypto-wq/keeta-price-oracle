@@ -28,7 +28,34 @@ export const PUBLIC_URL = (
 ).replace(/\/$/, '');
 
 export const POLL_INTERVAL_MS = 60_000;          // fetch CoinGecko every 60s
-export const PUBLISH_INTERVAL_MS = 5 * 60_000;   // publish an on-chain SET_INFO snapshot every 5 min
+export const PUBLISH_INTERVAL_MS = 5 * 60_000;   // (legacy) fixed publish cadence — superseded by the push feed below
+
+// ── On-chain PUSH feed (heartbeat + deviation triggers) ─────────────────────────────────────────
+// Replaces the fixed publish timer. A fresh on-chain snapshot is published when EITHER a heartbeat
+// interval has elapsed since the last on-chain publish, OR any pair's current median has moved more
+// than DEVIATION_THRESHOLD_PCT vs that pair's LAST-PUBLISHED-ON-CHAIN price. Publish frequency is
+// bounded (min interval + max/hour) to cap on-chain fees; deviations that fire faster than the min
+// interval are coalesced into a single publish once the interval clears.
+const intEnv = (name, def) => {
+  const v = parseInt(process.env[name], 10);
+  return Number.isFinite(v) && v > 0 ? v : def;
+};
+const floatEnv = (name, def) => {
+  const v = Number(process.env[name]);
+  return Number.isFinite(v) && v > 0 ? v : def;
+};
+
+// (a) Heartbeat: always publish at least this often, even with zero price movement. Default 30 min.
+export const HEARTBEAT_SECONDS = intEnv('HEARTBEAT_SECONDS', 1800);
+// (b) Deviation: publish when any pair's median moves more than this % vs its last on-chain price.
+export const DEVIATION_THRESHOLD_PCT = floatEnv('DEVIATION_THRESHOLD_PCT', 0.5);
+// Frequency floor: no trigger may publish more often than this (coalesces bursts). Default 60s.
+export const MIN_PUBLISH_INTERVAL_SECONDS = intEnv('MIN_PUBLISH_INTERVAL_SECONDS', 60);
+// Hard cap on on-chain publishes per rolling hour (fee guard). Default 30.
+export const MAX_PUBLISHES_PER_HOUR = intEnv('MAX_PUBLISHES_PER_HOUR', 30);
+// How often the trigger evaluator runs. Fine enough to honor the min interval + heartbeat without
+// out-pacing the 60s price poll; never coarser than the min interval, never finer than 10s.
+export const PUBLISH_EVAL_INTERVAL_MS = Math.max(10_000, Math.min(MIN_PUBLISH_INTERVAL_SECONDS * 1000, POLL_INTERVAL_MS));
 
 // TWAP (time-weighted average price) — API-only, NEVER added to the on-chain snapshot.
 export const TWAP_WINDOWS = { '1h': 3_600_000, '24h': 86_400_000 };

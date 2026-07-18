@@ -7,6 +7,8 @@ import { DB_PATH, TWAP_RETENTION_MS } from './config.js';
 
 let db = null;
 let stmtInsert, stmtSince, stmtCarry, stmtOldest, stmtPrune;
+// Push-feed state (baseline per pair + global meta). See getLastPublished/setLastPublished below.
+let stmtLastGet, stmtLastAll, stmtLastUpsert, stmtMetaGet, stmtMetaSet;
 
 export function initTimeseries(path = DB_PATH) {
   if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
@@ -14,11 +16,26 @@ export function initTimeseries(path = DB_PATH) {
   db.pragma('journal_mode = WAL');
   db.exec('CREATE TABLE IF NOT EXISTS prices (pair TEXT NOT NULL, ts INTEGER NOT NULL, price REAL NOT NULL)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_prices_pair_ts ON prices(pair, ts)');
+  // On-chain PUSH feed: per-pair last-published-on-chain price + timestamp (the deviation baseline).
+  // Persisted here (on the /data volume) so deviation triggers survive restarts.
+  db.exec('CREATE TABLE IF NOT EXISTS last_published (pair TEXT PRIMARY KEY, price REAL NOT NULL, ts INTEGER NOT NULL)');
+  // Small key/value store for global push-feed state (e.g. last_publish_ts for heartbeat/min-interval).
+  db.exec('CREATE TABLE IF NOT EXISTS oracle_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
   stmtInsert = db.prepare('INSERT INTO prices (pair, ts, price) VALUES (?, ?, ?)');
   stmtSince = db.prepare('SELECT ts, price FROM prices WHERE pair = ? AND ts > ? ORDER BY ts ASC');
   stmtCarry = db.prepare('SELECT ts, price FROM prices WHERE pair = ? AND ts <= ? ORDER BY ts DESC LIMIT 1');
   stmtOldest = db.prepare('SELECT MIN(ts) AS ts FROM prices WHERE pair = ?');
   stmtPrune = db.prepare('DELETE FROM prices WHERE ts < ?');
+  stmtLastGet = db.prepare('SELECT pair, price, ts FROM last_published WHERE pair = ?');
+  stmtLastAll = db.prepare('SELECT pair, price, ts FROM last_published');
+  stmtLastUpsert = db.prepare(
+    'INSERT INTO last_published (pair, price, ts) VALUES (?, ?, ?) ' +
+      'ON CONFLICT(pair) DO UPDATE SET price = excluded.price, ts = excluded.ts',
+  );
+  stmtMetaGet = db.prepare('SELECT value FROM oracle_meta WHERE key = ?');
+  stmtMetaSet = db.prepare(
+    'INSERT INTO oracle_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+  );
   return { path };
 }
 
@@ -66,4 +83,53 @@ export function computeTwap(pair, windowMs, nowMs = Date.now()) {
   }
   const value = dur > 0 ? weighted / dur : carry.price;
   return { status: 'ready', value, haveMs, windowMs, samples: inWindow.length + 1 };
+}
+
+// ── On-chain PUSH feed: last-published-on-chain baseline (per pair) + global meta ────────────────
+// The deviation trigger compares each pair's CURRENT median against the price we LAST published
+// on-chain for that pair. These are updated ONLY after a successful publish, so a failed publish
+// never advances the baseline (the pair stays "due" until it actually lands on-chain).
+
+// Latest on-chain price + ts for one pair, or null if never published.
+export function getLastPublished(pair) {
+  if (!db) return null;
+  const row = stmtLastGet.get(pair);
+  return row ? { pair: row.pair, price: row.price, ts: row.ts } : null;
+}
+
+// All per-pair baselines as { [pair]: { price, ts } }. Empty on the very first run (no baseline yet).
+export function getAllLastPublished() {
+  if (!db) return {};
+  const out = {};
+  for (const row of stmtLastAll.all()) out[row.pair] = { price: row.price, ts: row.ts };
+  return out;
+}
+
+// Upsert one pair's baseline. Call inside setLastPublishedBatch after a successful on-chain publish.
+export function setLastPublished(pair, price, tsMs) {
+  if (!db || !Number.isFinite(price)) return;
+  stmtLastUpsert.run(pair, price, Math.floor(tsMs));
+}
+
+// Atomically update baselines for every published pair (all-or-nothing).
+export function setLastPublishedBatch(entries, tsMs) {
+  if (!db) return;
+  const ts = Math.floor(tsMs);
+  const tx = db.transaction((rows) => {
+    for (const [pair, price] of rows) {
+      if (Number.isFinite(price)) stmtLastUpsert.run(pair, price, ts);
+    }
+  });
+  tx(entries);
+}
+
+// Global key/value meta (used for last_publish_ts: heartbeat + min-interval baseline).
+export function getMeta(key) {
+  if (!db) return null;
+  return stmtMetaGet.get(key)?.value ?? null;
+}
+
+export function setMeta(key, value) {
+  if (!db) return;
+  stmtMetaSet.run(key, String(value));
 }

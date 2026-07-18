@@ -1,28 +1,15 @@
 // Price-oracle anchor entrypoint. TESTNET ONLY.
-import { NETWORK, PORT, PUBLISH_INTERVAL_MS } from './config.js';
+import { NETWORK, PORT, PUBLISH_EVAL_INTERVAL_MS } from './config.js';
 import { pollOnce, startPolling, getCache } from './priceFeed.js';
-import { initOracle, publishSnapshot, publishDiscovery } from './keetaOracle.js';
+import { initOracle, publishDiscovery } from './keetaOracle.js';
 import { initTimeseries } from './timeseries.js';
+import { evaluateAndMaybePublish, pushFeedConfig } from './pushFeed.js';
 import { createServer } from './server.js';
 
 function hardFailIfNotTest() {
   if (NETWORK !== 'test') {
     console.error(`[oracle] FATAL: network is '${NETWORK}', but this oracle is TESTNET ONLY. Exiting.`);
     process.exit(1);
-  }
-}
-
-async function publishSnapshotSafe() {
-  try {
-    const { prices } = getCache();
-    if (!Object.keys(prices).length) {
-      console.warn('[oracle] no cached prices yet; skipping snapshot');
-      return;
-    }
-    const { blockHash, previous } = await publishSnapshot(prices);
-    console.log(`[oracle] snapshot SET_INFO block: ${blockHash} (previous: ${previous})`);
-  } catch (e) {
-    console.error('[oracle] snapshot publish failed:', e.message);
   }
 }
 
@@ -50,9 +37,17 @@ async function main() {
     console.error('[oracle] discovery publish failed:', e.message);
   }
 
-  // First snapshot now, then every 5 minutes.
-  await publishSnapshotSafe();
-  setInterval(publishSnapshotSafe, PUBLISH_INTERVAL_MS);
+  // On-chain PUSH feed: publish when a heartbeat interval elapses OR any pair deviates past a
+  // threshold vs its last on-chain price — bounded by a min interval + max/hour (see config.js).
+  const cfg = pushFeedConfig();
+  console.log(
+    `[oracle] push feed: heartbeat=${cfg.heartbeatSeconds}s, deviation>${cfg.deviationThresholdPct}%, ` +
+      `minInterval=${cfg.minPublishIntervalSeconds}s, maxPerHour=${cfg.maxPublishesPerHour}, ` +
+      `eval every ${Math.round(PUBLISH_EVAL_INTERVAL_MS / 1000)}s`,
+  );
+  // Evaluate once now (first run publishes to establish the baseline), then on the eval tick.
+  await evaluateAndMaybePublish();
+  setInterval(() => { evaluateAndMaybePublish(); }, PUBLISH_EVAL_INTERVAL_MS);
 
   const app = createServer();
   app.listen(PORT, () => console.log(`[oracle] HTTP listening on http://localhost:${PORT}`));
