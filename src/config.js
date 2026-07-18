@@ -6,6 +6,14 @@ export const VERSION = '2.0.0'; // multi-source aggregation + signed provenance 
 // Fewer than this -> the pair is marked stale rather than publishing a single-source number.
 export const MIN_SOURCES = 2;
 
+// Outlier guard: a live source whose value deviates more than this fraction from the median center
+// is dropped as a likely-bad print, and the median is recomputed over the survivors.
+// Configurable via OUTLIER_THRESHOLD_PCT (percent); default 2%.
+export const OUTLIER_THRESHOLD = (() => {
+  const pct = Number(process.env.OUTLIER_THRESHOLD_PCT);
+  return Number.isFinite(pct) && pct > 0 ? pct / 100 : 0.02;
+})();
+
 // The oracle refuses to run on anything other than 'test' (hard-fail in index.js + keetaOracle.js).
 export const NETWORK = process.env.KEETA_NETWORK || 'test';
 

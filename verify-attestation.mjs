@@ -97,6 +97,16 @@ async function main() {
     console.log(`TAMPER_SOURCES: "${orig}" -> "${tamperedSources[iSources]}"`);
     console.log('VERIFY_TAMPERED_SOURCES=' + (await VerifySignedData(account, tamperedSources, resp.attestation)));
   }
+
+  // 5d. Tamper signed `confidencePct` alone (if present) -> must be false.
+  //     Proves the confidence measure is attested, so a consumer can't be fed a faked confidence.
+  const iConf = resp.signedFields.indexOf('confidencePct');
+  if (iConf !== -1) {
+    const tamperedConf = values.slice();
+    tamperedConf[iConf] = flipOneDigit(tamperedConf[iConf]);
+    console.log(`TAMPER_CONFIDENCE: "${values[iConf]}" -> "${tamperedConf[iConf]}"`);
+    console.log('VERIFY_TAMPERED_CONFIDENCE=' + (await VerifySignedData(account, tamperedConf, resp.attestation)));
+  }
 }
 
 main().catch((e) => {

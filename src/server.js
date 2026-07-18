@@ -2,7 +2,7 @@
 import express from 'express';
 import { getCache, toDecimalString, toPriceScaled } from './priceFeed.js';
 import { attest, getAddress, getOnChainHistory } from './keetaOracle.js';
-import { ASSETS, PRICE_SCALE_DECIMALS, MIN_SOURCES, VERSION } from './config.js';
+import { ASSETS, PRICE_SCALE_DECIMALS, MIN_SOURCES, VERSION, PUBLIC_URL, OUTLIER_THRESHOLD } from './config.js';
 import { SOURCE_NAMES } from './sources.js';
 
 const START_TIME = new Date().toISOString();
@@ -13,6 +13,10 @@ const VERIFY_URL = `${REPO_URL}/blob/main/verify-attestation.mjs`;
 function landingPage() {
   const pairs = ASSETS.map((a) => a.pair);
   const pairChips = pairs.map((p) => `<code class="pair">${p}</code>`).join(' ');
+  const base = PUBLIC_URL || '$BASE'; // real host when deployed; placeholder only in local dev
+  const baseNote = PUBLIC_URL
+    ? `Requests above are copy-paste-ready against <code>${PUBLIC_URL}</code>.`
+    : `Replace <code>$BASE</code> with this host.`;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -59,12 +63,12 @@ function landingPage() {
   <h2>Endpoints</h2>
   <table>
     <tr><th>Endpoint</th><th>Example</th></tr>
-    <tr><td><code>GET /health</code></td><td><code>curl $BASE/health</code></td></tr>
-    <tr><td><code>POST /getPrice</code></td><td><code>curl -X POST $BASE/getPrice -H 'content-type: application/json' -d '{"pair":"KTA-USD"}'</code></td></tr>
-    <tr><td><code>POST /proof</code></td><td><code>curl -X POST $BASE/proof -H 'content-type: application/json' -d '{"pair":"KTA-USD"}'</code></td></tr>
-    <tr><td><code>POST /getPriceHistory</code></td><td><code>curl -X POST $BASE/getPriceHistory -H 'content-type: application/json' -d '{"pair":"KTA-USD","limit":10}'</code></td></tr>
+    <tr><td><code>GET /health</code></td><td><code>curl ${base}/health</code></td></tr>
+    <tr><td><code>POST /getPrice</code></td><td><code>curl -X POST ${base}/getPrice -H 'content-type: application/json' -d '{"pair":"KTA-USD"}'</code></td></tr>
+    <tr><td><code>POST /proof</code></td><td><code>curl -X POST ${base}/proof -H 'content-type: application/json' -d '{"pair":"KTA-USD"}'</code></td></tr>
+    <tr><td><code>POST /getPriceHistory</code></td><td><code>curl -X POST ${base}/getPriceHistory -H 'content-type: application/json' -d '{"pair":"KTA-USD","limit":10}'</code></td></tr>
   </table>
-  <p class="muted">Replace <code>$BASE</code> with this host. <code>pair</code> accepts the pair, symbol, or CoinGecko id.</p>
+  <p class="muted">${baseNote} <code>pair</code> accepts the pair, symbol, or CoinGecko id.</p>
 
   <h2>Signed &amp; verifiable</h2>
   <p>Every <code>/getPrice</code> response includes a <code>signedFields</code> list and an
@@ -85,7 +89,7 @@ function landingPage() {
 // Canonical, attested payload. Provenance (`method` + ordered `sources`) is SIGNED, not just shown,
 // so a consumer verifies which sources and aggregation produced the price. `sources` is the ordered
 // comma-joined source-name list; `timestamp` is the observation time (when the aggregation ran).
-const SIGNED_FIELDS = ['pair', 'quoteCurrency', 'price', 'priceScaled', 'priceScaleDecimals', 'method', 'sources', 'timestamp'];
+const SIGNED_FIELDS = ['pair', 'quoteCurrency', 'price', 'priceScaled', 'priceScaleDecimals', 'method', 'sources', 'confidenceBand', 'confidencePct', 'timestamp'];
 
 async function buildAttestation(entry) {
   const canonical = {
@@ -96,6 +100,8 @@ async function buildAttestation(entry) {
     priceScaleDecimals: entry.priceScaleDecimals,
     method: entry.method,
     sources: entry.sources, // canonical ordered, comma-joined provenance string
+    confidenceBand: entry.confidenceBand, // absolute agreement band (price units)
+    confidencePct: entry.confidencePct, // relative agreement %
     timestamp: entry.updatedAt,
   };
   const values = SIGNED_FIELDS.map((f) => canonical[f]);
@@ -221,6 +227,9 @@ export function createServer() {
         method: entry.method, // "median" (SIGNED)
         sources: entry.sources, // ordered comma-joined provenance (SIGNED)
         sourceList: entry.sourceList, // same, as an array (convenience; unsigned)
+        // Confidence from surviving-source agreement (both SIGNED). Lower = tighter agreement.
+        confidenceBand: entry.confidenceBand, // absolute, in USD price units
+        confidencePct: entry.confidencePct, // relative, percent
         liveSourceCount: entry.liveSourceCount,
         stale: !!entry.stale,
         timestamp: entry.updatedAt, // observation time (SIGNED)
@@ -240,6 +249,7 @@ export function createServer() {
       if (!entry) {
         return res.status(404).json({ ok: false, error: `Unknown or unavailable pair: ${req.body?.pair}` });
       }
+      const dropped = entry.droppedSources ?? [];
       const response = {
         ok: true,
         oracle: getAddress(),
@@ -249,14 +259,22 @@ export function createServer() {
           method: entry.method, // "median"
           liveSourceCount: entry.liveSourceCount ?? 0,
           minSourcesRequired: MIN_SOURCES,
+          outlierThresholdPct: OUTLIER_THRESHOLD * 100, // sources beyond this from the median are dropped
           sourcesUsed: entry.sourceList ?? [],
         },
-        sources: entry.sourceReports ?? [], // [{ name, price, ts }] raw per-source values used
-        sourcesDropped: entry.droppedSources ?? [], // [{ name, error, ts }] not counted this cycle
-        finalPrice: entry.price, // the published median
+        // Survivors used for the median. Each carries its native `quote` (USD vs USDT) for transparency.
+        sources: entry.sourceReports ?? [], // [{ name, price, ts, quote }]
+        // Split by reason so consumers see unreachable vs. rejected-as-outlier (with deviation %).
+        sourcesDropped: dropped, // [{ name, ts, quote, type, error? , price?, deviationPct? }]
+        sourcesUnreachable: dropped.filter((d) => d.type === 'unreachable'),
+        sourcesOutliers: dropped.filter((d) => d.type === 'outlier'),
+        finalPrice: entry.price, // the published median (over survivors)
         priceScaled: entry.priceScaled,
         priceScaleDecimals: entry.priceScaleDecimals,
         quoteCurrency: entry.quoteCurrency,
+        // Confidence from surviving-source agreement (both are in the signed payload).
+        confidenceBand: entry.confidenceBand ?? null,
+        confidencePct: entry.confidencePct ?? null,
         stale: !!entry.stale,
         timestamp: entry.updatedAt,
       };

@@ -69,15 +69,23 @@ consumers always get one consistent format. New blocks are `legacyShape: false`.
   "priceScaled": "11730000",     // optional integer form for on-chain consumers
   "priceScaleDecimals": 8,       // PRICE precision only — NOT any token's on-chain decimals
   "method": "median",            // SIGNED
-  "sources": "coinbase,coingecko,kraken",   // SIGNED: ordered, comma-joined provenance
-  "sourceList": ["coinbase", "coingecko", "kraken"], // same, as array (convenience, unsigned)
-  "liveSourceCount": 3,
+  "sources": "bitmart,coinbase,coingecko,coinpaprika,kraken,mexc", // SIGNED: ordered provenance (survivors)
+  "sourceList": ["bitmart", "coinbase", "coingecko", "coinpaprika", "kraken", "mexc"], // array (unsigned convenience)
+  "confidenceBand": "0.0001012676", // SIGNED: absolute agreement band, USD price units (std-dev of survivors)
+  "confidencePct": "0.087055",      // SIGNED: relative agreement %  (reject high values to skip low-confidence prices)
+  "liveSourceCount": 6,
   "stale": false,
-  "timestamp": "2026-07-18T02:30:26.356Z",
-  "signedFields": ["pair", "quoteCurrency", "price", "priceScaled", "priceScaleDecimals", "method", "sources", "timestamp"],
+  "timestamp": "2026-07-18T03:20:59.346Z",
+  "signedFields": ["pair", "quoteCurrency", "price", "priceScaled", "priceScaleDecimals", "method", "sources", "confidenceBand", "confidencePct", "timestamp"],
   "attestation": { "nonce": "...", "timestamp": "...", "signature": "..." }
 }
 ```
+
+**Outlier guard.** Before publishing, sources more than a configurable threshold (default **2%**,
+`OUTLIER_THRESHOLD_PCT`) from the median center are dropped as likely-bad prints and the median is
+recomputed over the survivors; if that leaves fewer than 2, the pair is marked **stale**. `/proof`
+distinguishes `sourcesUnreachable` (fetch failed) from `sourcesOutliers` (rejected, with each
+source's `deviationPct`), and labels each source's native `quote` (USD vs USDT).
 
 `/proof` returns the same attestation plus the full breakdown — every source's raw value and fetch
 timestamp, which sources were used vs dropped, the aggregation method, and the final median. It is
@@ -119,7 +127,8 @@ node examples/client.mjs BTC-USD         # any supported pair
 
 ### Verifying an attestation
 The attestation covers the **full canonical representation** — the value, its scaled integer form,
-**and its provenance** (`method` + ordered `sources`) — so `signedFields` is
+**its provenance** (`method` + ordered `sources`), **and its confidence** (`confidenceBand` +
+`confidencePct`) — so `signedFields` is
 `[pair, quoteCurrency, price, priceScaled, priceScaleDecimals, method, sources, timestamp]`, signed
 in that exact order and with those exact types (`priceScaleDecimals` is a number; `sources` is the
 ordered comma-joined source-name string). Verify with:
@@ -152,12 +161,13 @@ Expected output (live):
 ```
 LIVE_URL=https://keeta-price-oracle-production.up.railway.app/getPrice
 PUBKEY=keeta_aaba7633k7...6h3375hly
-SIGNED_FIELDS=["pair","quoteCurrency","price","priceScaled","priceScaleDecimals","method","sources","timestamp"]
-SIGNED_VALUES=["KTA-USD","USD","0.1173","11730000",8,"median","coinbase,coingecko,kraken","2026-07-18T02:30:26.356Z"]
+SIGNED_FIELDS=["pair","quoteCurrency","price","priceScaled","priceScaleDecimals","method","sources","confidenceBand","confidencePct","timestamp"]
+SIGNED_VALUES=["KTA-USD","USD","0.1163255","11632550",8,"median","bitmart,coinbase,coingecko,coinpaprika,kraken,mexc","0.0001012676","0.087055","2026-07-18T03:20:59.346Z"]
 VERIFY=true
 VERIFY_TAMPERED_PRICE=false
 VERIFY_TAMPERED_SCALED=false
 VERIFY_TAMPERED_SOURCES=false
+VERIFY_TAMPERED_CONFIDENCE=false
 ```
 
 ## Run

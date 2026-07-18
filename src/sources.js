@@ -92,6 +92,16 @@ async function bitmartPair(pair) {
   return n;
 }
 
+// Native quote asset per source (USDT venues are treated as a 1:1 USD proxy; surfaced in /proof).
+export const SOURCE_QUOTE = {
+  coingecko: 'USD',
+  coinbase: 'USD',
+  kraken: 'USD',
+  coinpaprika: 'USD',
+  mexc: 'USDT',
+  bitmart: 'USDT',
+};
+
 // Ordered source registry (alphabetical for deterministic provenance).
 export const SOURCE_NAMES = ['bitmart', 'coinbase', 'coingecko', 'coinpaprika', 'kraken', 'mexc'];
 const PER_PAIR = [
@@ -125,9 +135,9 @@ export async function fetchAllSources() {
       const dropped = [];
 
       // coingecko (from batch)
-      if (cgErr) dropped.push({ name: 'coingecko', error: cgErr, ts: nowIso() });
-      else if (typeof cg[pair] === 'number') used.push({ name: 'coingecko', price: cg[pair], ts: nowIso() });
-      else dropped.push({ name: 'coingecko', error: 'no price for pair', ts: nowIso() });
+      if (cgErr) dropped.push({ name: 'coingecko', quote: SOURCE_QUOTE.coingecko, error: cgErr, ts: nowIso() });
+      else if (typeof cg[pair] === 'number') used.push({ name: 'coingecko', quote: SOURCE_QUOTE.coingecko, price: cg[pair], ts: nowIso() });
+      else dropped.push({ name: 'coingecko', quote: SOURCE_QUOTE.coingecko, error: 'no price for pair', ts: nowIso() });
 
       // per-pair sources in parallel
       await Promise.all(
@@ -136,11 +146,11 @@ export async function fetchAllSources() {
           try {
             price = await fn(pair);
           } catch (e) {
-            dropped.push({ name, error: e.message || String(e), ts: nowIso() });
+            dropped.push({ name, quote: SOURCE_QUOTE[name], error: e.message || String(e), ts: nowIso() });
             return;
           }
           if (price == null) return; // source doesn't list this pair -> skip (not a drop)
-          used.push({ name, price, ts: nowIso() });
+          used.push({ name, quote: SOURCE_QUOTE[name], price, ts: nowIso() });
         }),
       );
 
