@@ -209,6 +209,44 @@ signature check (the HTTP path carries an explicit attestation instead).
 > does **not** emit any token's on-chain decimals (e.g. testnet KTA = 9 dp) — conflating the two is a
 > scaling footgun. `priceScaleDecimals` is *price* fixed-point precision, unrelated to token decimals.
 
+## Demo: an atomic on-chain swap settled at the oracle price
+
+[`examples/swap-at-oracle-price.mjs`](examples/swap-at-oracle-price.mjs) runs a **real, atomic
+KTA↔BTC swap on Keeta testnet that settles at the oracle's signed price.** It's the end-to-end
+payoff: a signed oracle number driving a real on-chain settlement.
+
+**What it proves.** It fetches `KTA-USD` and `BTC-USD` from the live oracle, **verifies both
+signatures**, computes the cross rate, then settles **one atomic vote staple** — party A sends *X*
+KTA to B and B sends *Y* BTC to A, where *X/Y* equals the oracle cross rate — via Keeta's native
+`createSwapRequest`/`acceptSwapRequest`. Both legs settle atomically or neither does. It saves a
+proof bundle ([`examples/swap-proof.json`](examples/swap-proof.json)) with the verified signed
+prices, the computed rate, the explorer-verifiable staple hash, and a check that the settled amounts
+match the oracle rate within rounding. A real run:
+
+```
+KTA-USD = 0.1172… (verified: true)   BTC-USD = 64761.75 (verified: true)   1 BTC = 552,274.55 KTA
+swap: A sends 10 KTA  <->  B sends 0.00001811 BTC   (KTA 9dp, BTC 8dp, exact)
+ATOMIC STAPLE: B97CC3E4FF059CE9CC439E6CF05778E256E36A1049C54E0143FF34705067EC85  (published: true)
+swap legs EXACT: true   implied BTC-USD 64750.79 vs oracle 64761.75 (error 0.0169%)
+```
+Verify the staple on the [testnet explorer](https://explorer.test.keeta.com).
+
+**Honest framing.** Both accounts (A and B) are controlled by the **same operator** — the script
+holds both throwaway seeds. This demonstrates the **mechanism** (a signed oracle price driving a real
+atomic on-chain settlement between two Keeta accounts), **not** a third-party trade or price
+discovery. The "BTC" is a real Keeta testnet token (name `BTC`, 8 dp); party B was pre-loaded with it
+(standing in for an FX-anchor acquisition). The rounding error is the 8-dp quantization of the BTC leg.
+
+**How to run** (never uses the oracle's seed — two fresh throwaway seeds from env):
+```bash
+# fund two fresh testnet accounts with KTA (https://faucet.test.keeta.com) and give B some BTC token
+SWAP_SEED_A=<hexA> SWAP_SEED_B=<hexB> node examples/swap-at-oracle-price.mjs 10   # 10 = KTA A sends
+# optional env: BTC_TOKEN, KTA_TOKEN, ORACLE_URL
+```
+It refuses to run if a swap seed equals `APP_SEED` (that would fork the live oracle chain), and it
+never touches the oracle account — A and B are independent accounts, so the single-writer rule isn't
+involved.
+
 ### Verifying an attestation
 The attestation covers the **full canonical representation** — the value, its scaled integer form,
 **its provenance** (`method` + ordered `sources`), **its confidence** (`confidenceBand` +
