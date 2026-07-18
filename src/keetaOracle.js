@@ -69,33 +69,72 @@ export async function attest(canonicalFields) {
   return await SignData(account, canonicalFields);
 }
 
-// Publish a SET_INFO block carrying base64-encoded JSON in the metadata field.
-// Runs inside the serialize() mutex so publishes can never overlap. Immediately before building,
-// currentHeadBlock is re-read fresh inside the critical section; the builder then chains the block
-// off that head (equivalent to previous = currentHeadBlock ?? Block.NO_PREVIOUS). The
-// generateFeeBlock callback is passed to the publish (transmit) call.
-// Returns { blockHash, previous, headBefore } for chaining proof.
+const PUBLISH_MAX_RETRIES = 3;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// A block whose voted successor already exists: our previous is stale, so re-read the true tip.
+function isSuccessorConflict(err) {
+  const code = err?.code || err?.cause?.code;
+  const msg = String(err?.message || err || '');
+  return code === 'LEDGER_SUCCESSOR_VOTE_EXISTS' || /existing vote for a successor|SUCCESSOR_VOTE_EXISTS/i.test(msg);
+}
+
+// Recover any unpublished/half-published pending staple so the applied head advances to the TRUE
+// tip (follows a voted successor). No-op when the account is clean. Same primitive the SDK's own
+// UserClient.send uses to recover from LEDGER_SUCCESSOR_VOTE_EXISTS.
+async function recoverToTrueTip(reason) {
+  try {
+    const staple = await client.recover(true);
+    console.log(`[oracle] recover (${reason}): ${staple ? 'advanced head to true tip' : 'nothing to recover'}`);
+    return staple;
+  } catch (e) {
+    console.error(`[oracle] recover (${reason}) failed: ${e.message}`);
+    return null;
+  }
+}
+
+async function attemptPublish(name, description, obj, retries) {
+  // (1) Proactively resolve a stale pending block so we build off the TRUE current tip, not a
+  //     leftover pending block from a prior/overlapping publisher.
+  try {
+    const pending = await client.pendingBlock();
+    if (pending) await recoverToTrueTip(`pending block ${pending.hash.toString().slice(0, 12)}…`);
+  } catch (e) {
+    console.warn(`[oracle] pending check failed: ${e.message}`);
+  }
+
+  // (2) Fresh authoritative head read inside the serialized critical section (never a cached head).
+  const state = await client.client.getAccountInfo(getAddress());
+  const headBefore = state?.currentHeadBlock ?? KeetaNet.lib.Block.NO_PREVIOUS;
+
+  const metadata = Buffer.from(JSON.stringify(obj)).toString('base64');
+  const builder = client.initBuilder();
+  builder.setInfo({ name, description, metadata });
+  const computed = await builder.computeBlocks();
+  const block = computed.blocks[0];
+  const blockHash = block.hash.toString();
+  const previous = (typeof block.toJSON === 'function' ? block.toJSON().previous : block.previous)?.toString?.() ?? String(headBefore);
+
+  try {
+    await client.transmit(computed.blocks, { generateFeeBlock: (staple) => builder.computeFeeBlock(staple) });
+    return { blockHash, previous, headBefore: String(headBefore), retries };
+  } catch (err) {
+    // (3) Successor-vote conflict: our head was stale. Recover to the true tip and retry off it.
+    if (retries < PUBLISH_MAX_RETRIES && isSuccessorConflict(err)) {
+      console.warn(`[oracle] publish successor-vote conflict (attempt ${retries + 1}/${PUBLISH_MAX_RETRIES + 1}); recovering + retrying`);
+      await recoverToTrueTip('successor conflict');
+      await sleep(500 * 2 ** retries); // 500ms, 1s, 2s backoff
+      return attemptPublish(name, description, obj, retries + 1);
+    }
+    throw err;
+  }
+}
+
+// Publish a SET_INFO block (base64 JSON metadata). Serialized so publishes never overlap in-process;
+// builds off the freshly-read true head each attempt; self-heals a wedged head via recover()+retry.
+// Returns { blockHash, previous, headBefore, retries }.
 function publishSetInfo(name, description, obj) {
-  return serialize(async () => {
-    // Fresh head read inside the serialized critical section.
-    const state = await client.client.getAccountInfo(getAddress());
-    const headBefore = state.currentHeadBlock ?? KeetaNet.lib.Block.NO_PREVIOUS;
-
-    const metadata = Buffer.from(JSON.stringify(obj)).toString('base64');
-    const builder = client.initBuilder();
-    builder.setInfo({ name, description, metadata });
-    const computed = await builder.computeBlocks();
-    const block = computed.blocks[0];
-    const blockHash = block.hash.toString();
-    const previous =
-      (typeof block.toJSON === 'function' ? block.toJSON().previous : block.previous)?.toString?.() ??
-      String(headBefore);
-
-    await client.transmit(computed.blocks, {
-      generateFeeBlock: (staple) => builder.computeFeeBlock(staple),
-    });
-    return { blockHash, previous, headBefore: String(headBefore) };
-  });
+  return serialize(() => attemptPublish(name, description, obj, 0));
 }
 
 // Build the minimal on-chain snapshot object. TWAP is deliberately NOT included here — it is

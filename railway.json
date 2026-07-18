@@ -1,0 +1,8 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "deploy": {
+    "numReplicas": 1,
+    "overlapSeconds": 0,
+    "restartPolicyType": "ON_FAILURE"
+  }
+}
