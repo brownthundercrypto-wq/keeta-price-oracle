@@ -36,7 +36,9 @@ from the CoinGecko free API, caches them in memory, publishes signed price snaps
   overlapping and forking the account head (`LEDGER_SUCCESSOR_VOTE_EXISTS`).
 - **Signed responses** — every price payload is signed with anchor `SignData` over the full
   canonical tuple `[pair, quoteCurrency, price, priceScaled, priceScaleDecimals, method, sources,
-  timestamp]`, so both the value and its provenance are attested.
+  confidenceBand, confidencePct, twap1h, twap24h, timestamp]`, so the value, its provenance, its
+  confidence, and its TWAPs are all attested. **Always build the signed-values array from the
+  response's own `signedFields` list, in order — do not hardcode it, the set grows.**
 
 ## Endpoints
 
@@ -73,10 +75,13 @@ consumers always get one consistent format. New blocks are `legacyShape: false`.
   "sourceList": ["bitmart", "coinbase", "coingecko", "coinpaprika", "kraken", "mexc"], // array (unsigned convenience)
   "confidenceBand": "0.0001012676", // SIGNED: absolute agreement band, USD price units (std-dev of survivors)
   "confidencePct": "0.087055",      // SIGNED: relative agreement %  (reject high values to skip low-confidence prices)
+  "twap1h": "0.11701",           // SIGNED: 1h time-weighted average, or "building" until enough history
+  "twap24h": "building",          // SIGNED: 24h TWAP (here still warming up)
+  "twapDetail": { "1h": { "status": "ready", "haveSeconds": 5400, "windowSeconds": 3600 }, "24h": { "status": "building", "haveSeconds": 5400, "windowSeconds": 86400 } }, // unsigned detail
   "liveSourceCount": 6,
   "stale": false,
   "timestamp": "2026-07-18T03:20:59.346Z",
-  "signedFields": ["pair", "quoteCurrency", "price", "priceScaled", "priceScaleDecimals", "method", "sources", "confidenceBand", "confidencePct", "timestamp"],
+  "signedFields": ["pair", "quoteCurrency", "price", "priceScaled", "priceScaleDecimals", "method", "sources", "confidenceBand", "confidencePct", "twap1h", "twap24h", "timestamp"],
   "attestation": { "nonce": "...", "timestamp": "...", "signature": "..." }
 }
 ```
@@ -127,17 +132,20 @@ node examples/client.mjs BTC-USD         # any supported pair
 
 ### Verifying an attestation
 The attestation covers the **full canonical representation** — the value, its scaled integer form,
-**its provenance** (`method` + ordered `sources`), **and its confidence** (`confidenceBand` +
-`confidencePct`) — so `signedFields` is
-`[pair, quoteCurrency, price, priceScaled, priceScaleDecimals, method, sources, timestamp]`, signed
-in that exact order and with those exact types (`priceScaleDecimals` is a number; `sources` is the
-ordered comma-joined source-name string). Verify with:
+**its provenance** (`method` + ordered `sources`), **its confidence** (`confidenceBand` +
+`confidencePct`), **and its TWAPs** (`twap1h` + `twap24h`) — so `signedFields` is
+`[pair, quoteCurrency, price, priceScaled, priceScaleDecimals, method, sources, confidenceBand, confidencePct, twap1h, twap24h, timestamp]`,
+signed in that exact order and with those exact types (`priceScaleDecimals` is a number; `sources` is
+the ordered comma-joined source-name string; TWAP fields are a value string or `"building"`).
+
+**Always build the signed-values array from the response's own `signedFields` list, in order — do
+not hardcode it, the set grows.** Verify with:
 
 ```js
 import { VerifySignedData } from '@keetanetwork/anchor/lib/utils/signing.js';
-const data = signedFields.map(f => response[f]); // exact returned values, in order
-const ok = await VerifySignedData(oracleAccount, data, attestation);
-// ok === true; tampering ANY signed field (e.g. priceScaled alone) -> false
+const data = response.signedFields.map(f => response[f]); // exact returned values, in order — never hardcode the list
+const ok = await VerifySignedData(oracleAccount, data, response.attestation);
+// ok === true; tampering ANY signed field (e.g. priceScaled or twap1h alone) -> false
 ```
 
 ### Standalone verifier: `verify-attestation.mjs`
@@ -161,13 +169,14 @@ Expected output (live):
 ```
 LIVE_URL=https://keeta-price-oracle-production.up.railway.app/getPrice
 PUBKEY=keeta_aaba7633k7...6h3375hly
-SIGNED_FIELDS=["pair","quoteCurrency","price","priceScaled","priceScaleDecimals","method","sources","confidenceBand","confidencePct","timestamp"]
-SIGNED_VALUES=["KTA-USD","USD","0.1163255","11632550",8,"median","bitmart,coinbase,coingecko,coinpaprika,kraken,mexc","0.0001012676","0.087055","2026-07-18T03:20:59.346Z"]
+SIGNED_FIELDS=["pair","quoteCurrency","price","priceScaled","priceScaleDecimals","method","sources","confidenceBand","confidencePct","twap1h","twap24h","timestamp"]
+SIGNED_VALUES=["KTA-USD","USD","0.1163255","11632550",8,"median","bitmart,coinbase,coingecko,coinpaprika,kraken,mexc","0.0001012676","0.087055","building","building","2026-07-18T03:20:59.346Z"]
 VERIFY=true
 VERIFY_TAMPERED_PRICE=false
 VERIFY_TAMPERED_SCALED=false
 VERIFY_TAMPERED_SOURCES=false
 VERIFY_TAMPERED_CONFIDENCE=false
+VERIFY_TAMPERED_TWAP1H=false
 ```
 
 ## Run
@@ -188,11 +197,6 @@ curl -s -X POST http://localhost:9010/getPrice \
 
 Env vars: `APP_SEED` (required, hex seed), `PORT` (default 9010), `KEETA_NETWORK`
 (default `test`; any other value → immediate exit).
-
-## Decimals
-
-On-chain token precision is reported per pair so consumers scale correctly. Note **testnet KTA is
-9 decimals** (not 18): `KTA=9, BTC=8, ETH=18, USDC=6, EURC=6`.
 
 ## Implementation notes / gotchas respected
 
