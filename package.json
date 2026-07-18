@@ -9,7 +9,8 @@
   },
   "scripts": {
     "start": "node src/index.js",
-    "test": "node --test"
+    "test": "node --test",
+    "alert:test": "node src/alerter.js"
   },
   "dependencies": {
     "@keetanetwork/anchor": "0.0.60",

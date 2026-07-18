@@ -57,6 +57,23 @@ export const MAX_PUBLISHES_PER_HOUR = intEnv('MAX_PUBLISHES_PER_HOUR', 30);
 // out-pacing the 60s price poll; never coarser than the min interval, never finer than 10s.
 export const PUBLISH_EVAL_INTERVAL_MS = Math.max(10_000, Math.min(MIN_PUBLISH_INTERVAL_SECONDS * 1000, POLL_INTERVAL_MS));
 
+// ── Monitoring & alerting (internal health -> optional Discord webhook) ───────────────────────────
+// Additive: purely observes the running oracle. Does NOT affect signing / aggregation / publishing.
+// The alerter fires on STATE TRANSITIONS only (bad -> once, recovered -> once) with an optional
+// reminder after ALERT_REALERT_MINUTES, so a persistent problem does not spam the channel.
+//
+// ALERT_WEBHOOK_URL is a SECRET — set it in the Railway environment only, never commit it. When it
+// is unset, alerting is disabled and conditions are logged locally instead.
+export const ALERT_WEBHOOK_URL = process.env.ALERT_WEBHOOK_URL || '';
+// Alert when the distinct live-source count across all pairs drops below this floor. Default 3.
+export const ALERT_MIN_SOURCES = intEnv('ALERT_MIN_SOURCES', 3);
+// Alert when a pair's signed confidencePct (relative source disagreement) exceeds this %. Default 2%.
+export const ALERT_DISAGREEMENT_PCT = floatEnv('ALERT_DISAGREEMENT_PCT', 2);
+// While a condition stays bad, re-send a single reminder at most this often (minutes). Default 60.
+export const ALERT_REALERT_MINUTES = intEnv('ALERT_REALERT_MINUTES', 60);
+// How often the health monitor evaluates conditions (well under the ~60s detection goal).
+export const MONITOR_INTERVAL_MS = 30_000;
+
 // TWAP (time-weighted average price) — API-only, NEVER added to the on-chain snapshot.
 export const TWAP_WINDOWS = { '1h': 3_600_000, '24h': 86_400_000 };
 export const TWAP_LONGEST_MS = Math.max(...Object.values(TWAP_WINDOWS));

@@ -47,10 +47,19 @@ const META_LAST_PUBLISH_TS = 'last_publish_ts';
 let publishTimes = [];
 // Guard so two overlapping evaluator ticks can't both decide to publish at once.
 let evaluating = false;
+// Health of the last on-chain publish ATTEMPT (for monitoring only): true = landed, false = failed
+// after self-heal retries, null = none attempted yet. Purely observational — set around the existing
+// publish call; does not alter publishing behavior.
+let lastPublishOk = null;
 
 function recentPublishCount(now) {
   publishTimes = publishTimes.filter((t) => now - t < HOUR_MS);
   return publishTimes.length;
+}
+
+// Read the last publish attempt's health (for the alerter). { ok: boolean|null }.
+export function getPublishHealth() {
+  return { ok: lastPublishOk };
 }
 
 // Numeric last-published timestamp (global). Persisted so heartbeat/min-interval survive restarts.
@@ -173,7 +182,15 @@ export async function evaluateAndMaybePublish(nowMs = Date.now()) {
     }
 
     // Publish the coherent batch of ALL pairs through the serialized, self-healing publisher.
-    const { blockHash, previous } = await publishSnapshot(cache.prices);
+    // Record publish health for the monitor (observational only; rethrows so behavior is unchanged).
+    let blockHash, previous;
+    try {
+      ({ blockHash, previous } = await publishSnapshot(cache.prices));
+      lastPublishOk = true;
+    } catch (e) {
+      lastPublishOk = false;
+      throw e;
+    }
 
     // Success -> advance baselines (per priced pair) + the global last-publish ts, atomically.
     setLastPublishedBatch(Object.entries(priced), nowMs);

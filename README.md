@@ -222,11 +222,54 @@ npm test        # node --test  -> runs everything under test/
 Coverage (`test/`): median (odd/even/single/unsorted), decimal ↔ `priceScaled` round-trip, the
 outlier guard + stale (never single-source) + confidence, TWAP time-weighting (uneven durations,
 carry-in clipped to the window start, cold-start `"building"`), sign/verify with per-field tamper
-tests, the on-chain snapshot size guard (`< 5000`), and the push-feed trigger logic (deviation,
-heartbeat, min-interval coalescing, per-hour cap, first-run baseline).
+tests, the on-chain snapshot size guard (`< 5000`), the push-feed trigger logic (deviation,
+heartbeat, min-interval coalescing, per-hour cap, first-run baseline), and the **alert decision
+logic** (transition-only firing, no re-fire while bad, recovery, cooldown reminder).
 
 **CI:** [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs `npm ci && npm test` on Node
 22.x for every push and pull request (see the badge at the top). No secrets, no deploy.
+
+## Monitoring & alerts
+
+The oracle self-monitors and posts to an optional **Discord webhook** so you know within ~60s when
+it is **degraded** (not just down). It is purely observational — it never touches signing,
+aggregation, or publishing. Alerts fire on **state transitions only** (once when a condition goes
+bad, once when it recovers), with a single optional reminder after a cooldown, so a persistent
+problem never spams the channel.
+
+Conditions (evaluated every 30s and on each publish):
+
+| Condition | Fires when |
+|---|---|
+| Pair stale | a pair drops below `MIN_SOURCES` / has no fresh update |
+| Sources floor | distinct `liveSourceCount` across all pairs `< ALERT_MIN_SOURCES` |
+| Publish failure | an on-chain publish exhausts the self-heal retries (recovers when one lands) |
+| High disagreement | a pair's signed `confidencePct` `> ALERT_DISAGREEMENT_PCT` |
+| Start / restart | one-shot `started: vX, N sources` notice so restarts are visible |
+
+Individual source fetch errors (e.g. CoinGecko 429 from a datacenter IP) do **not** alert — only a
+breach of the `liveSourceCount` floor does.
+
+**Env (all optional; defaults in parentheses):**
+
+| Var | Purpose |
+|---|---|
+| `ALERT_WEBHOOK_URL` | Discord webhook URL. **Secret — set on Railway only, never commit.** Unset → alerting disabled (conditions are logged locally instead). |
+| `ALERT_MIN_SOURCES` | live-source floor (`3`) |
+| `ALERT_DISAGREEMENT_PCT` | `confidencePct` above which a pair is flagged (`2`) |
+| `ALERT_REALERT_MINUTES` | reminder cooldown while a condition stays bad (`60`; `0` disables reminders) |
+
+### Receiving alerts (Discord)
+
+1. In Discord: **Server Settings → Integrations → Webhooks → New Webhook**, pick a channel, **Copy
+   Webhook URL** (looks like `https://discord.com/api/webhooks/<id>/<token>`).
+2. Set it on Railway (never in the repo): `railway variables --set "ALERT_WEBHOOK_URL=<url>" --service keeta-price-oracle` (this redeploys). On the next start you'll get the `started: …` notice.
+3. **Fire a one-off TEST alert** to confirm delivery — `npm run alert:test` (or `node src/alerter.js`) with `ALERT_WEBHOOK_URL` set:
+   - locally: `ALERT_WEBHOOK_URL=<url> npm run alert:test`
+   - on Railway (uses the service's env): `railway run npm run alert:test`
+
+   The payload is Discord-format `{"content":"…"}`; a `[keeta-price-oracle testnet] ✅ TEST alert …`
+   message appears in the channel.
 
 ## Run
 
@@ -249,7 +292,8 @@ Env vars: `APP_SEED` (required, hex seed), `PORT` (default 9010), `KEETA_NETWORK
 default `./data/prices.sqlite`, a mounted volume on the deployed host). Push-feed tuning (all
 optional, with the defaults noted above): `HEARTBEAT_SECONDS`, `DEVIATION_THRESHOLD_PCT`,
 `MIN_PUBLISH_INTERVAL_SECONDS`, `MAX_PUBLISHES_PER_HOUR`. `OUTLIER_THRESHOLD_PCT` (default `2`) and
-`COINGECKO_API_KEY` (optional) are also honored.
+`COINGECKO_API_KEY` (optional) are also honored. Monitoring/alerting (see **Monitoring & alerts**):
+`ALERT_WEBHOOK_URL` (secret), `ALERT_MIN_SOURCES`, `ALERT_DISAGREEMENT_PCT`, `ALERT_REALERT_MINUTES`.
 
 ## Implementation notes / gotchas respected
 

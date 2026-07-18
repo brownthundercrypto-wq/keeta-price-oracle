@@ -1,9 +1,10 @@
 // Price-oracle anchor entrypoint. TESTNET ONLY.
-import { NETWORK, PORT, PUBLISH_EVAL_INTERVAL_MS } from './config.js';
+import { NETWORK, PORT, PUBLISH_EVAL_INTERVAL_MS, MONITOR_INTERVAL_MS, VERSION } from './config.js';
 import { pollOnce, startPolling, getCache } from './priceFeed.js';
 import { initOracle, publishDiscovery } from './keetaOracle.js';
 import { initTimeseries } from './timeseries.js';
-import { evaluateAndMaybePublish, pushFeedConfig } from './pushFeed.js';
+import { evaluateAndMaybePublish, pushFeedConfig, getPublishHealth } from './pushFeed.js';
+import { initAlerter, runAlertCycle, sendStartupAlert } from './alerter.js';
 import { createServer } from './server.js';
 
 function hardFailIfNotTest() {
@@ -11,6 +12,21 @@ function hardFailIfNotTest() {
     console.error(`[oracle] FATAL: network is '${NETWORK}', but this oracle is TESTNET ONLY. Exiting.`);
     process.exit(1);
   }
+}
+
+// Build the health snapshot the alerter evaluates (distinct live sources, per-pair stale +
+// disagreement, and the last publish outcome). Read-only over the current cache.
+function buildHealth() {
+  const cache = getCache();
+  const pairs = {};
+  const liveSources = new Set();
+  for (const e of Object.values(cache.prices)) {
+    // Only surface disagreement for a fresh pair; a stale pair alerts as stale, not as disagreement.
+    const confidencePct = !e.stale && e.confidencePct != null ? Number(e.confidencePct) : null;
+    pairs[e.pair] = { stale: !!e.stale, confidencePct };
+    for (const r of e.sourceReports || []) liveSources.add(r.name);
+  }
+  return { liveSourceCount: liveSources.size, pairs, publishOk: getPublishHealth().ok };
 }
 
 async function main() {
@@ -48,6 +64,17 @@ async function main() {
   // Evaluate once now (first run publishes to establish the baseline), then on the eval tick.
   await evaluateAndMaybePublish();
   setInterval(() => { evaluateAndMaybePublish(); }, PUBLISH_EVAL_INTERVAL_MS);
+
+  // Internal monitoring + alerting (additive; observes health only). Fires on state transitions to
+  // a configurable Discord webhook; disabled/log-only when ALERT_WEBHOOK_URL is unset.
+  const { enabled } = initAlerter();
+  const health0 = buildHealth();
+  console.log(
+    `[oracle] alerting: ${enabled ? 'enabled (ALERT_WEBHOOK_URL set)' : 'disabled (ALERT_WEBHOOK_URL unset — log only)'} | ` +
+      `monitor every ${Math.round(MONITOR_INTERVAL_MS / 1000)}s`,
+  );
+  sendStartupAlert(VERSION, health0.liveSourceCount); // one-shot restart notice (fire-and-forget)
+  setInterval(() => { runAlertCycle(buildHealth()); }, MONITOR_INTERVAL_MS); // fire-and-forget; never blocks
 
   const app = createServer();
   app.listen(PORT, () => console.log(`[oracle] HTTP listening on http://localhost:${PORT}`));
