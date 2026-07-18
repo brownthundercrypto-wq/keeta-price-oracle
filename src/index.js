@@ -3,7 +3,7 @@ import { NETWORK, PORT, PUBLISH_EVAL_INTERVAL_MS, MONITOR_INTERVAL_MS, VERSION }
 import { pollOnce, startPolling, getCache } from './priceFeed.js';
 import { initOracle, publishDiscovery } from './keetaOracle.js';
 import { initTimeseries } from './timeseries.js';
-import { evaluateAndMaybePublish, pushFeedConfig, getPublishHealth } from './pushFeed.js';
+import { evaluateAndMaybePublish, pushFeedConfig, getPublishHealth, seedLastPublishFromChain } from './pushFeed.js';
 import { initAlerter, runAlertCycle, sendStartupAlert } from './alerter.js';
 import { createServer } from './server.js';
 
@@ -64,6 +64,9 @@ async function main() {
   // Evaluate once now (first run publishes to establish the baseline), then on the eval tick.
   await evaluateAndMaybePublish();
   setInterval(() => { evaluateAndMaybePublish(); }, PUBLISH_EVAL_INTERVAL_MS);
+  // If that didn't publish (baseline persisted, within heartbeat), seed the dashboard's "latest
+  // on-chain publish" from the chain so it shows the real block immediately after a restart.
+  await seedLastPublishFromChain();
 
   // Internal monitoring + alerting (additive; observes health only). Fires on state transitions to
   // a configurable Discord webhook; disabled/log-only when ALERT_WEBHOOK_URL is unset.

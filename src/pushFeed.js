@@ -22,7 +22,7 @@ import {
   MAX_PUBLISHES_PER_HOUR,
 } from './config.js';
 import { getCache } from './priceFeed.js';
-import { publishSnapshot, snapshotMetadataLength } from './keetaOracle.js';
+import { publishSnapshot, snapshotMetadataLength, getOnChainHistory } from './keetaOracle.js';
 import { getAllLastPublished, setLastPublishedBatch, getMeta, setMeta } from './timeseries.js';
 
 const HEARTBEAT_MS = HEARTBEAT_SECONDS * 1000;
@@ -67,6 +67,29 @@ export function getPublishHealth() {
 
 // Read metadata about the latest successful on-chain publish (for the dashboard), or null.
 export function getLastPublish() {
+  return lastPublish;
+}
+
+// Seed `lastPublish` from the chain at startup (READ-ONLY) so the dashboard shows the real latest
+// on-chain block immediately after a restart — baselines persist, so a restart within the heartbeat
+// window won't publish (and thus wouldn't otherwise populate this in-memory value) for up to 30 min.
+// No-op if a publish has already happened this run. The trigger is unknown from the chain alone.
+export async function seedLastPublishFromChain() {
+  if (lastPublish) return lastPublish;
+  try {
+    const [latest] = await getOnChainHistory(1);
+    if (latest?.blockHash) {
+      lastPublish = {
+        blockHash: latest.blockHash,
+        previous: null,
+        publishedAt: latest.timestamp ?? null,
+        trigger: 'prior-run',
+        reason: 'latest on-chain snapshot (seeded from the chain at startup)',
+      };
+    }
+  } catch (e) {
+    console.warn(`[push] seed last-publish from chain failed (non-fatal): ${e.message}`);
+  }
   return lastPublish;
 }
 
