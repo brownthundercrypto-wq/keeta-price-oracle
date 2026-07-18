@@ -89,3 +89,6 @@ for (const [p, e] of Object.entries(snap.prices)) {
 console.log('');
 console.log('Authenticity: this data lives on the ORACLE ACCOUNT\'s own chain — only the oracle key can');
 console.log('write there (single-writer), so reading it from that account IS the provenance guarantee.');
+
+// The Keeta client keeps a network handle open; exit explicitly so this CLI example returns promptly.
+process.exit(0);
