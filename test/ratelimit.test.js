@@ -79,28 +79,64 @@ test('decideRateLimit does not mutate the input buckets', () => {
   assert.equal(global.tokens, 100, 'global bucket must be immutable');
 });
 
-// ── client IP resolution (X-Forwarded-For) ───────────────────────────────────────────────────────
-test('getClientIp reads the originating client from X-Forwarded-For (leftmost), not the socket', () => {
-  const req = { headers: { 'x-forwarded-for': '203.0.113.7, 10.0.0.1, 10.0.0.2' }, socket: { remoteAddress: '10.0.0.9' } };
-  assert.equal(getClientIp(req), '203.0.113.7');
+// ── client IP resolution (X-Forwarded-For), trusting N hops from the RIGHT ─────────────────────────
+// Railway's XFF is `<real-client>, <one internal hop>` (verified live). With hops=1 the real client
+// is parts[len-1-hops]; counting from the right means a spoofed leftmost entry is IGNORED.
+test('getClientIp derives the client from the trusted-proxy entry (hops from the right), not the socket', () => {
+  // Railway shape: real client, then one Railway hop.
+  const req = { headers: { 'x-forwarded-for': '203.0.113.7, 10.0.0.1' }, socket: { remoteAddress: '::ffff:100.64.0.3' } };
+  assert.equal(getClientIp(req, 1), '203.0.113.7');
+});
+
+test('a SPOOFED leftmost XFF entry does NOT grant a fresh identity (not spoofable)', () => {
+  // Genuine (post-Railway) request:
+  const genuine = getClientIp({ headers: { 'x-forwarded-for': '203.0.113.7, 10.0.0.1' } }, 1);
+  // Attacker prepends a fake leftmost entry; the trusted-hop entry is unchanged:
+  const spoofed = getClientIp({ headers: { 'x-forwarded-for': '9.9.9.9, 203.0.113.7, 10.0.0.1' } }, 1);
+  assert.equal(genuine, '203.0.113.7');
+  assert.equal(spoofed, '203.0.113.7');
+  assert.equal(spoofed, genuine, 'spoofing the leftmost must resolve to the same client key');
+});
+
+test('an attacker rotating the spoofed leftmost cannot evade the per-IP limit', () => {
+  const cfg = { perMin: 60, burst: 1, globalPerMin: 100000, globalBurst: 100000 };
+  const hit = harness(cfg);
+  const realHop = '203.0.113.7, 10.0.0.1'; // same real client + Railway hop each time
+  const k1 = getClientIp({ headers: { 'x-forwarded-for': `1.1.1.1, ${realHop}` } }, 1);
+  const k2 = getClientIp({ headers: { 'x-forwarded-for': `2.2.2.2, ${realHop}` } }, 1);
+  const k3 = getClientIp({ headers: { 'x-forwarded-for': `3.3.3.3, ${realHop}` } }, 1);
+  assert.equal(k1, k2);
+  assert.equal(k2, k3); // all map to the SAME bucket key despite different spoofed leftmosts
+  assert.equal(hit(k1, 0).allowed, true);
+  assert.equal(hit(k2, 0).allowed, false); // 2nd request throttled — rotation did not help
+  assert.equal(hit(k3, 0).allowed, false);
+});
+
+test('two genuinely different clients still get independent buckets', () => {
+  const cfg = { perMin: 60, burst: 1, globalPerMin: 100000, globalBurst: 100000 };
+  const hit = harness(cfg);
+  const ipA = getClientIp({ headers: { 'x-forwarded-for': '203.0.113.7, 10.0.0.1' } }, 1);
+  const ipB = getClientIp({ headers: { 'x-forwarded-for': '198.51.100.4, 10.0.0.1' } }, 1);
+  assert.notEqual(ipA, ipB);
+  assert.equal(hit(ipA, 0).allowed, true);
+  assert.equal(hit(ipA, 0).allowed, false);
+  assert.equal(hit(ipB, 0).allowed, true); // different real client -> own bucket
+});
+
+test('hops=0 (no trusted proxy) uses the rightmost entry', () => {
+  assert.equal(getClientIp({ headers: { 'x-forwarded-for': '203.0.113.7, 10.0.0.1' } }, 0), '10.0.0.1');
+});
+
+test('too few XFF entries for the hop count falls back to the leftmost real entry', () => {
+  assert.equal(getClientIp({ headers: { 'x-forwarded-for': '203.0.113.7' } }, 1), '203.0.113.7');
 });
 
 test('getClientIp falls back to the socket address when XFF is missing', () => {
   const req = { headers: {}, socket: { remoteAddress: '198.51.100.4' } };
-  assert.equal(getClientIp(req), '198.51.100.4');
+  assert.equal(getClientIp(req, 1), '198.51.100.4');
 });
 
 test('getClientIp handles a missing socket safely (never throws)', () => {
-  assert.equal(getClientIp({ headers: {} }), 'unknown');
-  assert.equal(getClientIp({ headers: { 'x-forwarded-for': '   ' }, socket: {} }), 'unknown');
-});
-
-test('two different client IPs get independent buckets even via XFF', () => {
-  const cfg = { perMin: 60, burst: 1, globalPerMin: 100000, globalBurst: 100000 };
-  const hit = harness(cfg);
-  const ipA = getClientIp({ headers: { 'x-forwarded-for': '1.1.1.1, 10.0.0.1' } });
-  const ipB = getClientIp({ headers: { 'x-forwarded-for': '2.2.2.2, 10.0.0.1' } });
-  assert.equal(hit(ipA, 0).allowed, true);
-  assert.equal(hit(ipA, 0).allowed, false);
-  assert.equal(hit(ipB, 0).allowed, true); // different real client -> own bucket
+  assert.equal(getClientIp({ headers: {} }, 1), 'unknown');
+  assert.equal(getClientIp({ headers: { 'x-forwarded-for': '   ' }, socket: {} }, 1), 'unknown');
 });

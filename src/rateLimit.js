@@ -9,7 +9,7 @@
 //
 // State is IN-MEMORY — correct for a single instance (the current deploy: numReplicas: 1). Multi-
 // instance (Tier 3) would need shared state (e.g. Redis) so limits are enforced across replicas.
-import { RATE_LIMIT_PER_MIN, RATE_LIMIT_BURST, RATE_LIMIT_GLOBAL_PER_MIN } from './config.js';
+import { RATE_LIMIT_PER_MIN, RATE_LIMIT_BURST, RATE_LIMIT_GLOBAL_PER_MIN, TRUST_PROXY_HOPS } from './config.js';
 
 // Refill a bucket to `now`. A missing bucket starts full. Pure (returns a new bucket).
 function refill(bucket, now, capacity, ratePerMin) {
@@ -55,19 +55,25 @@ export function decideRateLimit({ now, bucket, global, cfg }) {
   return { allowed, retryAfter, reason, bucket: perBucket, global: gBucket };
 }
 
-// Resolve the real client IP behind Railway's proxy. X-Forwarded-For is "client, proxy1, proxy2, …"
-// with the ORIGINATING client leftmost; the socket address would just be the proxy (every request
-// would look identical), so we read XFF. Falls back safely when XFF is absent. (Per-IP keying is
-// best-effort — a client can spoof the leftmost XFF entry — but the GLOBAL cap still bounds abuse.)
-export function getClientIp(req) {
-  const xff = req.headers?.['x-forwarded-for'];
-  if (typeof xff === 'string' && xff.length) {
-    const first = xff.split(',')[0].trim();
-    if (first) return first;
-  }
-  if (Array.isArray(xff) && xff.length) {
-    const first = String(xff[0]).split(',')[0].trim();
-    if (first) return first;
+// Resolve the real client IP behind the proxy. X-Forwarded-For is "client, proxy1, proxy2, …" — each
+// proxy APPENDS on the right, so the trustworthy client IP is the entry the trusted proxy appended:
+// `parts[len - 1 - hops]`, counted from the RIGHT. The socket address would just be the proxy (every
+// request would look identical), and the LEFTMOST entry is client-spoofable — so we use neither.
+//
+// `hops` = number of trusted proxy hops. VERIFIED on the live service: Railway's edge rewrites XFF to
+// `<real-client>, <one internal hop>` and DISCARDS client-supplied XFF, so hops=1 yields the real
+// client and any injected leftmost entries are ignored (no fresh bucket from spoofing). The global
+// cap remains a backstop regardless. Falls back to the socket address when XFF is absent.
+export function getClientIp(req, hops = TRUST_PROXY_HOPS) {
+  const raw = req.headers?.['x-forwarded-for'];
+  const xff = Array.isArray(raw) ? raw.join(',') : raw;
+  if (typeof xff === 'string' && xff.trim()) {
+    const parts = xff.split(',').map((s) => s.trim()).filter(Boolean);
+    if (parts.length) {
+      const idx = parts.length - 1 - hops;
+      const ip = parts[idx >= 0 ? idx : 0]; // fewer hops present than expected -> leftmost real entry
+      if (ip) return ip;
+    }
   }
   return req.socket?.remoteAddress || req.ip || 'unknown';
 }

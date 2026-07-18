@@ -125,7 +125,13 @@ source's `deviationPct`), and labels each source's native `quote` (USD vs USDT).
 timestamp, which sources were used vs dropped, the aggregation method, and the final median. It is
 the "show exactly where the price came from" endpoint.
 
-## Integrate in 5 minutes
+## Consume the feed
+
+Two ways to consume the oracle — pick whichever fits your app. **Path A (HTTP)** gives a rich,
+per-request signed quote (spot + confidence + TWAP). **Path B (on-chain)** reads the latest published
+price set straight from the Keeta ledger with no HTTP dependency at all.
+
+### Path A — HTTP API (signed, verified) — integrate in 5 minutes
 
 Fetch a price and **verify its signature** before trusting it — using only the two public packages,
 no oracle code. A runnable version is in [`examples/client.mjs`](examples/client.mjs).
@@ -154,6 +160,50 @@ console.log(`${q.pair} = ${q.price} ${q.quoteCurrency}`); // only trust it once 
 node examples/client.mjs                 # KTA-USD from the live endpoint
 node examples/client.mjs BTC-USD         # any supported pair
 ```
+
+### Path B — On-chain (read the ledger directly)
+
+The payoff of the push feed: read the **latest published snapshot straight off the oracle account's
+own chain** of `SET_INFO` blocks — **no HTTP API, no oracle code**, only `@keetanetwork/keetanet-client`.
+A runnable reader is in [`examples/onchain-consumer.mjs`](examples/onchain-consumer.mjs).
+
+```js
+// npm i @keetanetwork/keetanet-client
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const KeetaNet = require('@keetanetwork/keetanet-client');
+const { Account } = KeetaNet.lib;
+
+const ORACLE = 'keeta_aaba7633k7zfn3hhavs7xh2yd27qdmbtspi5npnkvcvz7ticezcxmv6h3375hly';
+const account = Account.fromPublicKeyString(ORACLE);
+const client = KeetaNet.UserClient.fromNetwork('test', null, { account }); // null signer = READ-ONLY
+
+const blocks = await client.chain();                       // the oracle account's blocks, newest first
+for (const block of blocks) {
+  const ops = block.operations || block.toJSON?.().operations || [];
+  for (const op of ops) {
+    const metadata = op.metadata ?? op.toJSON?.().metadata;
+    if (op.type === 2 /* SET_INFO */ && metadata) {         // decode the base64 JSON metadata
+      const snap = JSON.parse(Buffer.from(metadata, 'base64').toString('utf8'));
+      if (snap.type === 'price-snapshot') {                 // the latest one wins (newest first)
+        console.log(snap.timestamp, snap.prices['KTA-USD'].price, snap.prices['KTA-USD'].quoteCurrency);
+        return;
+      }
+    }
+  }
+}
+```
+
+```bash
+node examples/onchain-consumer.mjs                 # KTA-USD, live testnet oracle account
+node examples/onchain-consumer.mjs BTC-USD         # any published pair
+```
+
+**Read-only + authenticity.** The reader builds a **read-only** client (`null` signer) — it never
+constructs or publishes a block, so it can't fork the oracle's head (single-writer rule). Because the
+snapshot lives on the **oracle account's own chain**, and only the oracle's key can write there,
+reading it from that account is itself the provenance guarantee — the on-chain path needs no separate
+signature check (the HTTP path carries an explicit attestation instead).
 
 > **Decimals note.** This oracle reports a USD **price**, never a token amount, so it deliberately
 > does **not** emit any token's on-chain decimals (e.g. testnet KTA = 9 dp) — conflating the two is a
@@ -225,7 +275,8 @@ carry-in clipped to the window start, cold-start `"building"`), sign/verify with
 tests, the on-chain snapshot size guard (`< 5000`), the push-feed trigger logic (deviation,
 heartbeat, min-interval coalescing, per-hour cap, first-run baseline), the **alert decision logic**
 (transition-only firing, no re-fire while bad, recovery, cooldown reminder), and the **rate limiter**
-(allow under limit, block over, refill over time, per-IP isolation, global cap, XFF parsing).
+(allow under limit, block over, refill over time, per-IP isolation, global cap, and client-IP
+resolution that trusts N proxy hops from the right so a spoofed leftmost XFF can't mint a fresh bucket).
 
 **CI:** [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs `npm ci && npm test` on Node
 22.x for every push and pull request (see the badge at the top). No secrets, no deploy.
@@ -280,11 +331,14 @@ curling, or a dashboard polling every few seconds, is **never** limited; only su
 gets `429`'d.
 
 - **Per client IP** — sustained `RATE_LIMIT_PER_MIN` requests/min with bursts up to
-  `RATE_LIMIT_BURST`. The client IP is read from the **`X-Forwarded-For`** header (originating
-  client = leftmost entry) since the service runs behind Railway's proxy; a missing header falls back
-  to the socket address safely.
+  `RATE_LIMIT_BURST`. The client IP is derived from **`X-Forwarded-For`**, trusting
+  `TRUST_PROXY_HOPS` hops **from the right** (`parts[len - 1 - hops]`) — i.e. the entry the trusted
+  proxy appended, **not** the client-spoofable leftmost. Verified on the live service: Railway's edge
+  rewrites XFF to `<real-client>, <one internal hop>` and discards client-supplied XFF, so the
+  default `TRUST_PROXY_HOPS=1` resolves the real client and an injected leftmost entry can't mint a
+  fresh bucket. A missing header falls back to the socket address safely.
 - **Global** — an instance-wide cap of `RATE_LIMIT_GLOBAL_PER_MIN` requests/min across all clients,
-  so the instance is protected even if a client spoofs its `X-Forwarded-For`.
+  the backstop that bounds abuse even if per-IP keying is ever imperfect.
 - **Applies to:** `POST /getPrice`, `/proof`, `/twap`, `/getPriceHistory`. **Exempt:** `GET /` and
   `GET /health` (so UptimeRobot + the internal monitor are never throttled).
 - **On limit:** `HTTP 429` + a `Retry-After: <seconds>` header + a small JSON body
@@ -300,6 +354,7 @@ replicas.
 | `RATE_LIMIT_PER_MIN` | per-IP sustained requests/min (`60`) |
 | `RATE_LIMIT_BURST` | per-IP burst allowance (`30`) |
 | `RATE_LIMIT_GLOBAL_PER_MIN` | instance-wide cap across all clients (`600`) |
+| `TRUST_PROXY_HOPS` | trusted proxy hops for client-IP resolution (`1`; Railway = 1, set `0` for direct/local) |
 
 ## Run
 
@@ -325,7 +380,7 @@ optional, with the defaults noted above): `HEARTBEAT_SECONDS`, `DEVIATION_THRESH
 `COINGECKO_API_KEY` (optional) are also honored. Monitoring/alerting (see **Monitoring & alerts**):
 `ALERT_WEBHOOK_URL` (secret), `ALERT_MIN_SOURCES`, `ALERT_DISAGREEMENT_PCT`, `ALERT_REALERT_MINUTES`.
 Rate limiting (see **Rate limiting**): `RATE_LIMIT_PER_MIN`, `RATE_LIMIT_BURST`,
-`RATE_LIMIT_GLOBAL_PER_MIN`.
+`RATE_LIMIT_GLOBAL_PER_MIN`, `TRUST_PROXY_HOPS`.
 
 ## Implementation notes / gotchas respected
 

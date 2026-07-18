@@ -44,6 +44,11 @@ const floatEnv = (name, def) => {
   const v = Number(process.env[name]);
   return Number.isFinite(v) && v > 0 ? v : def;
 };
+// Like intEnv but allows 0 (e.g. a hop count of 0 = no trusted proxy / direct connections).
+const intEnv0 = (name, def) => {
+  const v = parseInt(process.env[name], 10);
+  return Number.isFinite(v) && v >= 0 ? v : def;
+};
 
 // (a) Heartbeat: always publish at least this often, even with zero price movement. Default 30 min.
 export const HEARTBEAT_SECONDS = intEnv('HEARTBEAT_SECONDS', 1800);
@@ -86,6 +91,12 @@ export const RATE_LIMIT_BURST = intEnv('RATE_LIMIT_BURST', 30);
 // Instance-wide cap across ALL clients (requests/minute). Default 600 (10/sec). Its burst capacity is
 // a full minute's worth.
 export const RATE_LIMIT_GLOBAL_PER_MIN = intEnv('RATE_LIMIT_GLOBAL_PER_MIN', 600);
+// Number of trusted proxy hops between the real client and this app. The real client IP is the
+// X-Forwarded-For entry the trusted proxy appended — `parts[len - 1 - hops]`, counted from the RIGHT
+// so client-injected leftmost entries can't spoof it. VERIFIED on the live service: Railway's edge
+// proxy rewrites XFF to `<real-client>, <one internal hop>` (client-supplied XFF is discarded), i.e.
+// exactly ONE trusted hop — hence default 1. Set 0 for direct/no-proxy (local dev).
+export const TRUST_PROXY_HOPS = intEnv0('TRUST_PROXY_HOPS', 1);
 
 // TWAP (time-weighted average price) — API-only, NEVER added to the on-chain snapshot.
 export const TWAP_WINDOWS = { '1h': 3_600_000, '24h': 86_400_000 };
