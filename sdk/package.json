@@ -1,0 +1,51 @@
+{
+  "name": "keeta-price-oracle-client",
+  "version": "0.1.0",
+  "description": "One-line client for the Keeta testnet price oracle, with signature verification built in (on by default).",
+  "type": "module",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.js"
+    }
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@keetanetwork/anchor": "0.0.60",
+    "@keetanetwork/keetanet-client": "0.16.1"
+  },
+  "overrides": {
+    "@keetanetwork/keetanet-client": "0.16.1"
+  },
+  "keywords": [
+    "keeta",
+    "oracle",
+    "price",
+    "price-feed",
+    "testnet",
+    "web3",
+    "signed",
+    "attestation"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/brownthundercrypto-wq/keeta-price-oracle.git",
+    "directory": "sdk"
+  }
+}

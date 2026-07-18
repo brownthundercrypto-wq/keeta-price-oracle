@@ -1,7 +1,9 @@
 name: CI
 
 # Run the hermetic test suite on every push and pull request. No secrets, no network at test time
-# (tests mock sources + use in-memory SQLite and a throwaway keypair), no deploy.
+# (tests mock sources/fetch + use in-memory SQLite and a throwaway keypair), no deploy.
+# `npm test` is `node --test`, which recursively discovers BOTH the server tests (test/) and the
+# client SDK tests (sdk/test/) — the SDK resolves @keetanetwork/* from the root node_modules.
 on:
   push:
   pull_request:
