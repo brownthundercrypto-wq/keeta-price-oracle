@@ -116,7 +116,9 @@ export async function publishSnapshot(prices) {
       liveSourceCount: e.liveSourceCount,
       stale: !!e.stale,
       updatedAt: e.updatedAt,
-      sourceReports: e.sourceReports, // [{ name, price, ts }] raw per-source values
+      // Compact on-chain provenance: name+price only, to stay within the SET_INFO metadata size
+      // limit. Full per-source detail (ts, native quote, outliers) is served off-chain by /proof.
+      sourceReports: (e.sourceReports || []).map((r) => ({ name: r.name, price: r.price })),
     };
   }
   const snapshot = {
