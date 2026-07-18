@@ -8,11 +8,16 @@ from the CoinGecko free API, caches them in memory, publishes signed price snaps
 
 ## What it does (v2 scope)
 
-- **Multi-source data** — for every pair, prices are fetched from **three independent, keyless
-  sources** (CoinGecko, Coinbase, Kraken — all confirmed to return KTA/USD) and the **median** is
-  published. Each source's raw value + fetch timestamp is recorded. **≥ 2 live sources are required
-  to publish**; if fewer respond, the pair is marked **stale** rather than serving a single-source
-  number. Polled every **60s**, cached in memory.
+- **Multi-source data** — for every pair, prices are fetched from **up to six independent sources**
+  and the **median** is published (even counts average the two middle values). USD-quoted:
+  **CoinGecko, Coinbase, Kraken, CoinPaprika**. USDT-quoted (treated as a 1:1 USD proxy — the median
+  rejects any USDT-depeg outlier): **MEXC, Bitmart**. Not every venue lists every pair (e.g. MEXC has
+  no EURC); a source that doesn't list a pair is skipped, not counted as dropped. Each source's raw
+  value + fetch timestamp is recorded. **≥ 2 live sources are required to publish**; if fewer respond,
+  the pair is marked **stale** rather than serving a single-source number. Polled every **60s**.
+  - **`COINGECKO_API_KEY`** (optional): when set, CoinGecko requests send the `x-cg-demo-api-key`
+    header so they aren't rate-limited (HTTP 429) from datacenter IPs. Unset → anonymous CoinGecko.
+    The keyless sources already keep the live instance at ≥ 3 without a key.
 - **Signed provenance** — the attestation covers the aggregation `method` (`"median"`) and the
   ordered `sources` list, so consumers verify *which sources and method* produced the price, not
   just the number.
