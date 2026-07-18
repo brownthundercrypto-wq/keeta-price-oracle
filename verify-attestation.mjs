@@ -85,6 +85,18 @@ async function main() {
   tamperedScaled[iScaled] = flipOneDigit(tamperedScaled[iScaled]);
   console.log(`TAMPER_SCALED: "${values[iScaled]}" -> "${tamperedScaled[iScaled]}"`);
   console.log('VERIFY_TAMPERED_SCALED=' + (await VerifySignedData(account, tamperedScaled, resp.attestation)));
+
+  // 5c. Tamper signed provenance `sources` alone (if present) -> must be false.
+  //     Proves the source list + aggregation method are attested, not merely displayed.
+  const iSources = resp.signedFields.indexOf('sources');
+  if (iSources !== -1) {
+    const tamperedSources = values.slice();
+    const orig = String(tamperedSources[iSources]);
+    // Drop the last source from the canonical comma-joined list (a real provenance change).
+    tamperedSources[iSources] = orig.includes(',') ? orig.slice(0, orig.lastIndexOf(',')) : orig + '_x';
+    console.log(`TAMPER_SOURCES: "${orig}" -> "${tamperedSources[iSources]}"`);
+    console.log('VERIFY_TAMPERED_SOURCES=' + (await VerifySignedData(account, tamperedSources, resp.attestation)));
+  }
 }
 
 main().catch((e) => {

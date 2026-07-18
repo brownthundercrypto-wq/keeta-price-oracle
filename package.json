@@ -1,7 +1,7 @@
 {
   "name": "keeta-price-oracle",
-  "version": "1.0.0",
-  "description": "Keeta TESTNET price-feed oracle anchor: CoinGecko -> in-memory cache -> on-chain SET_INFO snapshots + signed attestations (AnchorFactory FX-anchor pattern).",
+  "version": "2.0.0",
+  "description": "Keeta TESTNET price-feed oracle anchor: multi-source (CoinGecko/Coinbase/Kraken) median aggregation -> in-memory cache -> on-chain SET_INFO snapshots + signed provenance attestations + /proof (AnchorFactory FX-anchor pattern).",
   "type": "module",
   "private": true,
   "engines": {

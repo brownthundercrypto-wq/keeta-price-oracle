@@ -6,10 +6,16 @@ from the CoinGecko free API, caches them in memory, publishes signed price snaps
 
 > **TESTNET ONLY.** The process hard-fails (exits) if the network is anything other than `test`.
 
-## What it does (v1 scope)
+## What it does (v2 scope)
 
-- **Data source** — one call to CoinGecko `/api/v3/simple/price` for ids `keeta, bitcoin, ethereum,
-  usd-coin, euro-coin` priced in `usd`. Polled every **60s**, cached in memory.
+- **Multi-source data** — for every pair, prices are fetched from **three independent, keyless
+  sources** (CoinGecko, Coinbase, Kraken — all confirmed to return KTA/USD) and the **median** is
+  published. Each source's raw value + fetch timestamp is recorded. **≥ 2 live sources are required
+  to publish**; if fewer respond, the pair is marked **stale** rather than serving a single-source
+  number. Polled every **60s**, cached in memory.
+- **Signed provenance** — the attestation covers the aggregation `method` (`"median"`) and the
+  ordered `sources` list, so consumers verify *which sources and method* produced the price, not
+  just the number.
 - **Identity** — derived from `APP_SEED` (hex) via `KeetaNet.lib.Account.fromSeed(seed, 0)`.
 - **On-chain publishing** — every **5 minutes** the current snapshot is published as a `SET_INFO`
   block (base64-encoded JSON in the `metadata` field), chained off the account's current head.
@@ -23,15 +29,17 @@ from the CoinGecko free API, caches them in memory, publishes signed price snaps
   the 5-minute timer) goes through a single in-process async mutex, and `currentHeadBlock` is
   re-read fresh inside the critical section before each publish. This prevents two publishes from
   overlapping and forking the account head (`LEDGER_SUCCESSOR_VOTE_EXISTS`).
-- **Signed responses** — every price payload is signed with anchor `SignData(account,
-  [pair, price, timestamp])`, so consumers get an attested quote.
+- **Signed responses** — every price payload is signed with anchor `SignData` over the full
+  canonical tuple `[pair, quoteCurrency, price, priceScaled, priceScaleDecimals, method, sources,
+  timestamp]`, so both the value and its provenance are attested.
 
 ## Endpoints
 
 | Method | Path | Body | Returns |
 |--------|------|------|---------|
-| GET  | `/health`          | —                     | status, oracle address, cached pairs |
-| POST | `/getPrice`        | `{ "pair": "KTA-USD" }` | latest cached price + signed attestation |
+| GET  | `/health`          | —                     | version, uptime, lastPriceUpdate, liveSourceCount, per-pair status |
+| POST | `/getPrice`        | `{ "pair": "KTA-USD" }` | latest median price + signed (provenance-attested) quote |
+| POST | `/proof`           | `{ "pair": "KTA-USD" }` | per-source raw values + timestamps, used vs dropped, method, median, attestation |
 | POST | `/getPriceHistory` | `{ "pair": "KTA-USD", "limit": 10 }` | last N on-chain snapshots |
 
 `pair` accepts the pair (`KTA-USD`), symbol (`KTA`), or CoinGecko id (`keeta`), case-insensitive.
@@ -51,26 +59,35 @@ consumers always get one consistent format. New blocks are `legacyShape: false`.
   "oracle": "keeta_aab...",
   "pair": "KTA-USD",
   "symbol": "KTA",
-  "price": "0.121054",          // authoritative: exact decimal STRING
+  "price": "0.1173",             // authoritative: exact decimal STRING (median of live sources)
   "quoteCurrency": "USD",
-  "source": "coingecko",
-  "priceScaled": "12105400",     // optional integer form for on-chain consumers
+  "priceScaled": "11730000",     // optional integer form for on-chain consumers
   "priceScaleDecimals": 8,       // PRICE precision only — NOT any token's on-chain decimals
-  "timestamp": "2026-07-17T23:06:51.242Z",
-  "signedFields": ["pair", "quoteCurrency", "price", "priceScaled", "priceScaleDecimals", "timestamp"],
+  "method": "median",            // SIGNED
+  "sources": "coinbase,coingecko,kraken",   // SIGNED: ordered, comma-joined provenance
+  "sourceList": ["coinbase", "coingecko", "kraken"], // same, as array (convenience, unsigned)
+  "liveSourceCount": 3,
+  "stale": false,
+  "timestamp": "2026-07-18T02:30:26.356Z",
+  "signedFields": ["pair", "quoteCurrency", "price", "priceScaled", "priceScaleDecimals", "method", "sources", "timestamp"],
   "attestation": { "nonce": "...", "timestamp": "...", "signature": "..." }
 }
 ```
+
+`/proof` returns the same attestation plus the full breakdown — every source's raw value and fetch
+timestamp, which sources were used vs dropped, the aggregation method, and the final median. It is
+the "show exactly where the price came from" endpoint.
 
 > **Decimals note.** This oracle reports a USD **price**, never a token amount, so it deliberately
 > does **not** emit any token's on-chain decimals (e.g. testnet KTA = 9 dp) — conflating the two is a
 > scaling footgun. `priceScaleDecimals` is *price* fixed-point precision, unrelated to token decimals.
 
 ### Verifying an attestation
-The attestation covers the **full canonical representation** — every field an integer/on-chain
-consumer might trust, including `priceScaled` — so `signedFields` is
-`[pair, quoteCurrency, price, priceScaled, priceScaleDecimals, timestamp]`, signed in that exact
-order and with those exact types (`priceScaleDecimals` is a number). Verify with:
+The attestation covers the **full canonical representation** — the value, its scaled integer form,
+**and its provenance** (`method` + ordered `sources`) — so `signedFields` is
+`[pair, quoteCurrency, price, priceScaled, priceScaleDecimals, method, sources, timestamp]`, signed
+in that exact order and with those exact types (`priceScaleDecimals` is a number; `sources` is the
+ordered comma-joined source-name string). Verify with:
 
 ```js
 import { VerifySignedData } from '@keetanetwork/anchor/lib/utils/signing.js';
@@ -100,11 +117,12 @@ Expected output (live):
 ```
 LIVE_URL=https://keeta-price-oracle-production.up.railway.app/getPrice
 PUBKEY=keeta_aaba7633k7...6h3375hly
-SIGNED_FIELDS=["pair","quoteCurrency","price","priceScaled","priceScaleDecimals","timestamp"]
-SIGNED_VALUES=["KTA-USD","USD","0.118981","11898100",8,"2026-07-18T01:55:47.143Z"]
+SIGNED_FIELDS=["pair","quoteCurrency","price","priceScaled","priceScaleDecimals","method","sources","timestamp"]
+SIGNED_VALUES=["KTA-USD","USD","0.1173","11730000",8,"median","coinbase,coingecko,kraken","2026-07-18T02:30:26.356Z"]
 VERIFY=true
 VERIFY_TAMPERED_PRICE=false
 VERIFY_TAMPERED_SCALED=false
+VERIFY_TAMPERED_SOURCES=false
 ```
 
 ## Run

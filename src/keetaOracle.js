@@ -15,7 +15,8 @@
 //  (Also: the account head is `currentHeadBlock`, not `state.head`.)
 
 import { createRequire } from 'module';
-import { NETWORK, PAIRS, PUBLIC_URL } from './config.js';
+import { NETWORK, PAIRS, PUBLIC_URL, MIN_SOURCES, VERSION } from './config.js';
+import { SOURCE_NAMES } from './sources.js';
 
 const require = createRequire(import.meta.url);
 const KeetaNet = require('@keetanetwork/keetanet-client');
@@ -97,16 +98,35 @@ function publishSetInfo(name, description, obj) {
   });
 }
 
-// Publish the current price snapshot as an on-chain SET_INFO block.
+// Publish the current price snapshot as an on-chain SET_INFO block, with compact provenance
+// (median price + per-source raw values/timestamps) so the on-chain record shows how each
+// price was derived.
 export async function publishSnapshot(prices) {
+  const compact = {};
+  for (const [pair, e] of Object.entries(prices)) {
+    compact[pair] = {
+      pair: e.pair,
+      symbol: e.symbol,
+      price: e.price,
+      priceScaled: e.priceScaled,
+      priceScaleDecimals: e.priceScaleDecimals,
+      quoteCurrency: e.quoteCurrency,
+      method: e.method,
+      sources: e.sources, // ordered, comma-joined provenance
+      liveSourceCount: e.liveSourceCount,
+      stale: !!e.stale,
+      updatedAt: e.updatedAt,
+      sourceReports: e.sourceReports, // [{ name, price, ts }] raw per-source values
+    };
+  }
   const snapshot = {
     type: 'price-snapshot',
     oracle: getAddress(),
     network: 'test',
     base: 'usd',
-    source: 'coingecko',
+    aggregation: 'median',
     timestamp: new Date().toISOString(),
-    prices, // { PAIR: { priceUsd, decimals, symbol, ... } }
+    prices: compact,
   };
   return await publishSetInfo('PRICE_ORACLE', 'Keeta testnet price oracle', snapshot);
 }
@@ -120,17 +140,25 @@ export async function publishDiscovery() {
     type: 'service-discovery',
     services: {
       oracle: {
-        version: '1',
+        version: VERSION,
         network: 'test',
-        description: 'Signed USD price feed for KTA/BTC/ETH/USDC/EURC',
+        description: 'Multi-source (median) signed USD price feed for KTA/BTC/ETH/USDC/EURC',
         pairs: PAIRS,
-        attestation: 'anchor SignData over [pair, quoteCurrency, price, priceScaled, priceScaleDecimals, timestamp]',
+        // Multi-source aggregation: independent keyless sources, median-aggregated, min-2 to publish.
+        aggregation: {
+          method: 'median',
+          minSources: MIN_SOURCES,
+          sources: SOURCE_NAMES,
+        },
+        attestation:
+          'anchor SignData over [pair, quoteCurrency, price, priceScaled, priceScaleDecimals, method, sources, timestamp] (provenance signed)',
         // Live public base URL (set on the deployed host); absent in local dev.
         baseUrl: base || undefined,
         endpoints: {
           health: `GET ${abs('/health')}`,
           getPrice: `POST ${abs('/getPrice')} { pair }`,
           getPriceHistory: `POST ${abs('/getPriceHistory')} { pair, limit }`,
+          proof: `POST ${abs('/proof')} { pair }`,
         },
         // Declared only — NOT enforced by this server. Volume-only tiers.
         feeSchedule: {

@@ -1,7 +1,11 @@
-// CoinGecko poller + in-memory price cache.
-import { COINGECKO_URL, COINGECKO_IDS, ASSETS, POLL_INTERVAL_MS, PRICE_SCALE_DECIMALS } from './config.js';
+// Multi-source price poller + in-memory cache.
+// For each pair: fetch all sources, take the MEDIAN as the published price, and record each
+// source's raw value + fetch timestamp. Requires >= MIN_SOURCES live sources to publish a price;
+// fewer -> the pair is marked stale (never publish a single-source number).
+import { ASSETS, POLL_INTERVAL_MS, PRICE_SCALE_DECIMALS, MIN_SOURCES } from './config.js';
+import { fetchAllSources } from './sources.js';
 
-let cache = { prices: {}, fetchedAt: null, source: 'coingecko' };
+let cache = { prices: {}, fetchedAt: null, source: 'multi-source-median', method: 'median' };
 let timer = null;
 
 export function getCache() {
@@ -21,33 +25,81 @@ export function toPriceScaled(n) {
   return String(Math.round(n * 10 ** PRICE_SCALE_DECIMALS));
 }
 
-// One call to /api/v3/simple/price for all ids, priced in usd. Caches in memory.
-export async function pollOnce() {
-  const url = `${COINGECKO_URL}?ids=${COINGECKO_IDS.join(',')}&vs_currencies=usd`;
-  const res = await fetch(url, { headers: { Accept: 'application/json' } });
-  if (!res.ok) throw new Error(`CoinGecko HTTP ${res.status}`);
-  const data = await res.json();
+function median(nums) {
+  const s = [...nums].sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
 
-  const prices = {};
+// Poll every source for every pair and aggregate.
+export async function pollOnce() {
+  const perPair = await fetchAllSources();
+  const fetchedAt = new Date().toISOString();
+  const prices = { ...cache.prices }; // carry forward last-good entries for stale pairs
+
   for (const a of ASSETS) {
-    const usd = data?.[a.id]?.usd;
-    if (usd !== undefined && usd !== null) {
+    const { used, dropped } = perPair[a.pair] || { used: [], dropped: [] };
+    const liveSourceCount = used.length;
+    const sourceReports = used.map((u) => ({ name: u.name, price: toDecimalString(u.price), ts: u.ts }));
+    const droppedSources = dropped.map((d) => ({ name: d.name, error: d.error, ts: d.ts }));
+
+    if (liveSourceCount >= MIN_SOURCES) {
+      const med = median(used.map((u) => u.price));
+      const usedNames = used.map((u) => u.name); // already name-sorted -> deterministic
       prices[a.pair] = {
         pair: a.pair,
         symbol: a.symbol,
-        coingeckoId: a.id,
-        // Authoritative, unambiguous USD price as an exact decimal string.
-        price: toDecimalString(usd),
+        price: toDecimalString(med),
         quoteCurrency: 'USD',
-        source: 'coingecko',
-        // Optional integer form for on-chain consumers. PRICE precision only — unrelated to any
-        // token's on-chain decimals. Derived from `price`, so it's verifiable by recomputation.
-        priceScaled: toPriceScaled(usd),
+        priceScaled: toPriceScaled(med),
         priceScaleDecimals: PRICE_SCALE_DECIMALS,
+        method: 'median',
+        // `sources` is the canonical, signed provenance: ordered source names, comma-joined.
+        sources: usedNames.join(','),
+        sourceList: usedNames,
+        sourceReports, // raw per-source values + timestamps (for /proof)
+        droppedSources,
+        liveSourceCount,
+        stale: false,
+        updatedAt: fetchedAt,
       };
+    } else {
+      // Not enough independent sources -> mark stale; keep the last good price if we have one.
+      const prev = cache.prices[a.pair];
+      if (prev && prev.price != null) {
+        prices[a.pair] = {
+          ...prev,
+          stale: true,
+          liveSourceCount,
+          sourceReports, // this cycle's (insufficient) reports
+          droppedSources,
+          lastCheckedAt: fetchedAt,
+          staleSince: prev.stale ? prev.staleSince : fetchedAt,
+        };
+      } else {
+        // Never had a good price: nothing to publish.
+        prices[a.pair] = {
+          pair: a.pair,
+          symbol: a.symbol,
+          price: null,
+          quoteCurrency: 'USD',
+          priceScaled: null,
+          priceScaleDecimals: PRICE_SCALE_DECIMALS,
+          method: 'median',
+          sources: '',
+          sourceList: [],
+          sourceReports,
+          droppedSources,
+          liveSourceCount,
+          stale: true,
+          updatedAt: null,
+          lastCheckedAt: fetchedAt,
+        };
+      }
     }
   }
-  cache = { prices, fetchedAt: new Date().toISOString(), source: 'coingecko' };
+
+  cache = { prices, fetchedAt, source: 'multi-source-median', method: 'median' };
   return cache;
 }
 
