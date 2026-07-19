@@ -4,8 +4,8 @@
   "oracle": {
     "account": "keeta_aaba7633k7zfn3hhavs7xh2yd27qdmbtspi5npnkvcvz7ticezcxmv6h3375hly",
     "ktaUsd": {
-      "price": "0.11867373140238362",
-      "timestamp": "2026-07-18T23:23:40.586Z",
+      "price": "0.11902926088414847",
+      "timestamp": "2026-07-19T00:11:41.036Z",
       "verified": true,
       "signedFields": [
         "pair",
@@ -22,14 +22,14 @@
         "timestamp"
       ],
       "attestation": {
-        "nonce": "aa6aee55-88e1-4d85-a9a2-e38f40767878",
-        "timestamp": "2026-07-18T23:23:49.681Z",
-        "signature": "VJMrycDsWm/Avy+wNp33poR5eb+2QqhKlYBQxhrmC1Z49Opb6TfFBQv8C/w3lc2J1n1NbHqBHXfcKWOv0aaSfg=="
+        "nonce": "21cee0d9-bc14-4f2d-8bc2-ab33896f1eea",
+        "timestamp": "2026-07-19T00:12:35.262Z",
+        "signature": "i8dZSfPHVaELgMEHcLJh3f+ieYVBCCQ9wddJfN6LzlkwK5pRX8sCplVgYdpDm+OdN1oTsuCF0FS/4E/PcUyWpA=="
       }
     },
     "btcUsd": {
-      "price": "64771.533453949334",
-      "timestamp": "2026-07-18T23:23:40.586Z",
+      "price": "64805.942500000005",
+      "timestamp": "2026-07-19T00:11:41.036Z",
       "verified": true,
       "signedFields": [
         "pair",
@@ -46,77 +46,83 @@
         "timestamp"
       ],
       "attestation": {
-        "nonce": "f55615f0-6f43-4731-ac44-4fcecec581f2",
-        "timestamp": "2026-07-18T23:23:49.820Z",
-        "signature": "b5P6ONE1vRhl4R8SZOZiWmpK1xt5zmEeORzCiToBEAlHwwc6T8dpl+GAfKw3unV0pROjxIrgOYVbZb24sgusbA=="
+        "nonce": "4161938d-23bc-4971-aa82-193a2e377142",
+        "timestamp": "2026-07-19T00:12:35.398Z",
+        "signature": "Mxx/ozxVP+9heAHpKCCxxt4lHy+lIFLXFoKw0VlHdLhJHH9ugApPLDjlJMWOB0D7vof06rIsPS5Erxdq72ca7w=="
       }
     },
-    "crossRate_KTA_per_BTC": 545795.0355865221
+    "crossRate_KTA_per_BTC": 544453.8764554358
+  },
+  "onChainAttestation": {
+    "embeddedIn": "A swap block, SET_INFO metadata (base64 JSON)",
+    "type": "oracle-swap-attestation-v1",
+    "oracle": "keeta_aaba7633k7zfn3hhavs7xh2yd27qdmbtspi5npnkvcvz7ticezcxmv6h3375hly",
+    "metadataChars": 2140
   },
   "swapAmounts": {
-    "ktaSent": "10",
-    "btcSent": "0.00001832",
-    "ktaBaseUnits": "10000000000",
-    "btcBaseUnits": "1832",
+    "ktaSent": "5",
+    "btcSent": "0.00000918",
+    "ktaBaseUnits": "5000000000",
+    "btcBaseUnits": "918",
     "ktaDecimals": 9,
     "btcDecimals": 8
   },
   "balancesBefore": {
     "A": {
-      "kta": "20",
-      "btc": "0.00063622"
+      "kta": "50",
+      "btc": "0.00065454"
     },
     "B": {
-      "kta": "69.9997594",
-      "btc": "0.00068325"
+      "kta": "119.9997391",
+      "btc": "0.00066493"
     }
   },
   "atomicStaple": {
-    "stapleBlocksHash": "27DCA81BDC234B466DBBD63FCCDFB0054F6469C973CE81FAFCAB493024360C0D",
-    "stapleBlocksHashNote": "Vote-staple aggregate identifier — block explorers index per-account BLOCKS + ACCOUNTS, not this. Verify via perAccountBlocks / explorer.accounts below.",
+    "stapleBlocksHash": "327DD19F1195F85B37937402BA437F0BADBB7264B5B807B93F8A6EEAB7E6D05E",
+    "stapleBlocksHashNote": "Vote-staple aggregate identifier — block explorers index per-account BLOCKS + ACCOUNTS, not this. Verify via attestationBlock / perAccountBlocks below.",
     "published": true,
+    "attestationBlock": "9F0E99235CA06BA5EC92F5807E1CAE78A2F51B5DB25B4B4E7B325D199C81CFF9",
     "perAccountBlocks": [
       {
         "party": "B",
         "account": "keeta_aabvhlabhl5yuqgwtyqmbdupvahz7siavg76cabqoyd6fhn72h6ytcn6qgddc2y",
-        "hash": "2CD93E152F70B44E4D44B1E9FC7CA5B608AE4677D2A59F7249C97262B2CBFD1F",
-        "explorer": "https://explorer.test.keeta.com/block/2CD93E152F70B44E4D44B1E9FC7CA5B608AE4677D2A59F7249C97262B2CBFD1F"
+        "hash": "69CCB2DCD24486244253236C58100615E0EA17D6EB43D217586013473BDC44A0",
+        "explorer": "https://explorer.test.keeta.com/block/69CCB2DCD24486244253236C58100615E0EA17D6EB43D217586013473BDC44A0"
       },
       {
         "party": "A",
         "account": "keeta_aabbbwy54rc4po5xksmmkwvbl2pcmiidly7563dy6aj2u6fs7tkehwbk5etuuia",
-        "hash": "91AFCB9BE654ABE00223604029DD2784582EDE0A01B49929157BF1DBD8D3E2C7",
-        "explorer": "https://explorer.test.keeta.com/block/91AFCB9BE654ABE00223604029DD2784582EDE0A01B49929157BF1DBD8D3E2C7"
+        "hash": "9F0E99235CA06BA5EC92F5807E1CAE78A2F51B5DB25B4B4E7B325D199C81CFF9",
+        "explorer": "https://explorer.test.keeta.com/block/9F0E99235CA06BA5EC92F5807E1CAE78A2F51B5DB25B4B4E7B325D199C81CFF9"
       },
       {
         "party": "B",
         "account": "keeta_aabvhlabhl5yuqgwtyqmbdupvahz7siavg76cabqoyd6fhn72h6ytcn6qgddc2y",
-        "hash": "D1FFFABA5C55F96886CE3A75C53AEDFA4BCFDD030682119E098A2A7A8A59CA1B",
-        "explorer": "https://explorer.test.keeta.com/block/D1FFFABA5C55F96886CE3A75C53AEDFA4BCFDD030682119E098A2A7A8A59CA1B"
+        "hash": "91E4CD50309674B9F8EC96EBA4C1B6B90DCB4CE54192951B49A749C360EE711E",
+        "explorer": "https://explorer.test.keeta.com/block/91E4CD50309674B9F8EC96EBA4C1B6B90DCB4CE54192951B49A749C360EE711E"
       }
-    ],
-    "swapRequestBlock": "91AFCB9BE654ABE00223604029DD2784582EDE0A01B49929157BF1DBD8D3E2C7"
+    ]
   },
   "balancesAfter": {
     "A": {
-      "kta": "10",
-      "btc": "0.00065454"
+      "kta": "45",
+      "btc": "0.00066372"
     },
     "B": {
-      "kta": "79.9997391",
-      "btc": "0.00066493"
+      "kta": "124.9997178",
+      "btc": "0.00065575"
     }
   },
   "settlementCheck": {
-    "A_sent_KTA_base": "10000000000",
-    "A_received_BTC_base": "1832",
-    "B_sent_BTC_base": "1832",
-    "B_received_KTA_net_base": "9999979700",
-    "stapleFee_KTA_base": "20300",
+    "A_sent_KTA_base": "5000000000",
+    "A_received_BTC_base": "918",
+    "B_sent_BTC_base": "918",
+    "B_received_KTA_net_base": "4999978700",
+    "stapleFee_KTA_base": "21300",
     "swapLegsExact": true,
-    "impliedBtcUsd": 64778.23766505656,
-    "oracleBtcUsd": 64771.533453949334,
-    "rateErrorPct": 0.010350551777485492
+    "impliedBtcUsd": 64830.75211554927,
+    "oracleBtcUsd": 64805.942500000005,
+    "rateErrorPct": 0.03828293300304616
   },
   "explorer": {
     "base": "https://explorer.test.keeta.com",
@@ -126,8 +132,8 @@
     }
   },
   "verification": {
-    "readOnlyScript": "node examples/verify-swap-onchain.mjs keeta_aabbbwy54rc4po5xksmmkwvbl2pcmiidly7563dy6aj2u6fs7tkehwbk5etuuia keeta_aabvhlabhl5yuqgwtyqmbdupvahz7siavg76cabqoyd6fhn72h6ytcn6qgddc2y",
-    "note": "Authoritative, no-guess path: reads both accounts' chains directly (no HTTP oracle, no seeds). Explorer account links load the SPA (soft-404 status but serves the app) and resolve client-side via the same node API."
+    "chainOnlyVerifier": "node examples/verify-swap-onchain.mjs 9F0E99235CA06BA5EC92F5807E1CAE78A2F51B5DB25B4B4E7B325D199C81CFF9",
+    "note": "CHAIN-ONLY: reads the attestation block by hash from the ledger (no HTTP oracle, no seeds), extracts the embedded oracle attestation, runs VerifySignedData against the oracle pubkey, and confirms the settled KTA/BTC amounts match the attested price. Explorer account links load the SPA (soft-404 but serves the app, resolves client-side)."
   },
   "framing": "Both accounts are one operator; this proves the mechanism (signed oracle price -> real atomic settlement), not a third-party trade."
 }

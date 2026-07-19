@@ -94,6 +94,17 @@ async function main() {
     crossRate_KTA_per_BTC: ktaPerBtc,
   };
 
+  // Build the ON-CHAIN attestation payload: everything a chain-only verifier needs to run
+  // VerifySignedData — the oracle pubkey, and for each price the exact signed field VALUES (in
+  // signedFields order) + the attestation {nonce, timestamp, signature}. Base64-encoded into the
+  // SET_INFO metadata of A's swap block, so swap + attestation land in ONE atomic staple.
+  const embedPrice = (q) => ({ signedFields: q.signedFields, values: Object.fromEntries(q.signedFields.map((f) => [f, q[f]])), attestation: q.attestation });
+  const attestation = { type: 'oracle-swap-attestation-v1', oracle: ktaQ.oracle, prices: { 'KTA-USD': embedPrice(ktaQ), 'BTC-USD': embedPrice(btcQ) } };
+  const attestMetaB64 = Buffer.from(JSON.stringify(attestation)).toString('base64');
+  console.log(`  on-chain attestation metadata: ${attestMetaB64.length} base64 chars (SET_INFO limit ~5464)`);
+  if (attestMetaB64.length >= 5000) { console.error('  ABORT: attestation metadata >= 5000 chars.'); process.exit(1); }
+  proof.onChainAttestation = { embeddedIn: 'A swap block, SET_INFO metadata (base64 JSON)', type: attestation.type, oracle: attestation.oracle, metadataChars: attestMetaB64.length };
+
   // ── Compute exact swap amounts (integer base units) ────────────────────────────────────────────
   // USD-value equivalence: X_KTA * ktaUsd == Y_BTC * btcUsd. With base units:
   //   Ybase = round( Xbase * ktaUsd / (btcUsd * (KTA_SCALE/BTC_SCALE)) )
@@ -117,14 +128,18 @@ async function main() {
   if ((A_kta0 ?? 0n) < Xbase) { console.error(`  A holds insufficient KTA (${A_kta0} < ${Xbase}). Fund A from the faucet.`); process.exit(1); }
   proof.balancesBefore = { A: { kta: dec(A_kta0, KTA_SCALE), btc: dec(A_btc0 ?? 0n, BTC_SCALE) }, B: { kta: dec(B_kta0, KTA_SCALE), btc: dec(B_btc0 ?? 0n, BTC_SCALE) } };
 
-  // ── STEP 3 — SWAP (one atomic staple) ──────────────────────────────────────────────────────────
-  console.log('\n=== STEP 3 — SWAP (atomic staple: A KTA <-> B BTC) ===');
-  // A initiates: send X KTA to B, and require to receive exactly Y BTC from B.
-  const swapBlock = await clientA.createSwapRequest({
-    from: { account: A, token: ktaTokenAcct, amount: Xbase },
-    to: { account: B, token: btcTokenAcct, amount: Ybase, exact: true },
-  });
-  console.log(`  A created swap request block: ${swapBlock.hash.toString()}`);
+  // ── STEP 3 — SWAP + EMBED (one atomic staple) ──────────────────────────────────────────────────
+  console.log('\n=== STEP 3 — SWAP + ATTESTATION (one atomic staple: A KTA <-> B BTC) ===');
+  // A's block does THREE things in one block: SEND X KTA to B, RECEIVE Y BTC from B (the swap), and
+  // SET_INFO carrying the oracle attestation as metadata. Built manually (createSwapRequest only does
+  // send+receive) so the attestation rides in the SAME block/staple as the settlement.
+  const builderA = clientA.initBuilder({ account: A });
+  builderA.send(B, Xbase, ktaTokenAcct);
+  builderA.receive(B, Ybase, btcTokenAcct, true); // exact
+  builderA.setInfo({ name: 'SWAP_ATTEST', description: 'oracle-attested atomic KTA-BTC swap', metadata: attestMetaB64 });
+  const aComputed = await builderA.computeBlocks();
+  const swapBlock = aComputed.blocks[0];
+  console.log(`  A built swap+attestation block: ${swapBlock.hash.toString()}`);
 
   // B accepts: validate what it receives (X KTA) and sends (Y BTC), producing the settlement blocks.
   const builderB = clientB.initBuilder({ account: B });
@@ -146,16 +161,18 @@ async function main() {
     const acct = b.account?.publicKeyString?.get?.() ?? null;
     return { party: acct === A_addr ? 'A' : acct === B_addr ? 'B' : '?', account: acct, hash: b.hash.toString(), explorer: `${EXPLORER}/block/${b.hash.toString()}` };
   });
+  const attestationBlock = swapBlock.hash.toString(); // A's block — carries swap ops + attestation
   console.log(`  ✓ ATOMIC STAPLE PUBLISHED (published: ${txResult?.publish})`);
   console.log(`    staple blocksHash (internal aggregate — NOT explorer-indexed): ${stapleHash}`);
+  console.log(`    ATTESTATION BLOCK (A, carries swap + oracle attestation): ${attestationBlock}`);
   console.log(`    per-account blocks (these resolve on the explorer / SDK):`);
-  for (const sb of perAccountBlocks) console.log(`      ${sb.party} ${sb.hash}`);
+  for (const sb of perAccountBlocks) console.log(`      ${sb.party} ${sb.hash}${sb.hash === attestationBlock ? '  <- attestation here' : ''}`);
   proof.atomicStaple = {
     stapleBlocksHash: stapleHash,
-    stapleBlocksHashNote: 'Vote-staple aggregate identifier — block explorers index per-account BLOCKS + ACCOUNTS, not this. Verify via perAccountBlocks / explorer.accounts below.',
+    stapleBlocksHashNote: 'Vote-staple aggregate identifier — block explorers index per-account BLOCKS + ACCOUNTS, not this. Verify via attestationBlock / perAccountBlocks below.',
     published: !!txResult?.publish,
+    attestationBlock, // ← run verify-swap-onchain.mjs against THIS hash
     perAccountBlocks,
-    swapRequestBlock: swapBlock.hash.toString(),
   };
 
   // ── STEP 4 — PROOF (settled balances match the oracle rate within rounding) ────────────────────
@@ -195,15 +212,16 @@ async function main() {
     accounts: { A: `${EXPLORER}/account/${A.publicKeyString.get()}`, B: `${EXPLORER}/account/${B.publicKeyString.get()}` },
   };
   proof.verification = {
-    readOnlyScript: `node examples/verify-swap-onchain.mjs ${A.publicKeyString.get()} ${B.publicKeyString.get()}`,
-    note: 'Authoritative, no-guess path: reads both accounts\' chains directly (no HTTP oracle, no seeds). Explorer account links load the SPA (soft-404 status but serves the app) and resolve client-side via the same node API.',
+    chainOnlyVerifier: `node examples/verify-swap-onchain.mjs ${attestationBlock}`,
+    note: 'CHAIN-ONLY: reads the attestation block by hash from the ledger (no HTTP oracle, no seeds), extracts the embedded oracle attestation, runs VerifySignedData against the oracle pubkey, and confirms the settled KTA/BTC amounts match the attested price. Explorer account links load the SPA (soft-404 but serves the app, resolves client-side).',
   };
   proof.framing = 'Both accounts are one operator; this proves the mechanism (signed oracle price -> real atomic settlement), not a third-party trade.';
 
   const outPath = new URL('./swap-proof.json', import.meta.url);
   writeFileSync(outPath, JSON.stringify(proof, null, 2));
   console.log(`\n=== PROOF BUNDLE saved to examples/swap-proof.json ===`);
-  console.log(JSON.stringify({ crossRate_KTA_per_BTC: proof.oracle.crossRate_KTA_per_BTC, swapAmounts: proof.swapAmounts, stapleHash, swapLegsExact: exactSwap, rateErrorPct }, null, 2));
+  console.log(JSON.stringify({ crossRate_KTA_per_BTC: proof.oracle.crossRate_KTA_per_BTC, swapAmounts: proof.swapAmounts, attestationBlock, swapLegsExact: exactSwap, rateErrorPct }, null, 2));
+  console.log(`\nVerify from the chain alone:  node examples/verify-swap-onchain.mjs ${attestationBlock}`);
   process.exit(0);
 }
 

@@ -1,69 +1,122 @@
 #!/usr/bin/env node
 /**
- * Independent, READ-ONLY proof of the oracle-priced swap. Reads parties A and B chains directly from
- * the Keeta testnet ledger and prints the actual swap blocks (per-account BLOCK hashes + the KTA/BTC
- * transfers between A and B). No seeds, no writes — anyone can run it.
+ * CHAIN-ONLY verifier for the oracle-attested swap. Given ONLY the on-chain block hash (the swap +
+ * attestation block, party A's block), it reads that block from the ledger and proves — from the
+ * chain alone, with NO off-chain price fetch — that:
  *
- * Why this and not the staple hash: an atomic swap settles as a vote STAPLE, whose `blocksHash` is
- * an internal aggregate identifier that block explorers do NOT index. What IS resolvable is each
- * account's own BLOCK (by hash) and each account's history — which is exactly what this prints.
+ *   a. the oracle's signed attestation is embedded in the block (SET_INFO metadata),
+ *   b. VerifySignedData passes against the oracle's public key for BOTH KTA-USD and BTC-USD
+ *      (and the embedded oracle pubkey is the KNOWN oracle account, not an impostor), and
+ *   c. the settled KTA/BTC amounts (from the block's SEND/RECEIVE ops) match the attested price
+ *      within rounding.
+ *
+ * This is the artifact that makes "the oracle signed the price this swap used" verifiable from the
+ * chain alone. It imports only @keetanetwork/keetanet-client + @keetanetwork/anchor (no oracle code),
+ * builds a READ-ONLY client (never writes), and needs no seeds.
  *
  * Usage:
- *   node examples/verify-swap-onchain.mjs [addressA] [addressB]
- *   # defaults to the demo swap accounts.
+ *   node examples/verify-swap-onchain.mjs <attestationBlockHash> [oraclePubkey]
+ *   # oraclePubkey defaults to the known testnet oracle account; override to check another instance.
  */
 import { createRequire } from 'module';
+import { VerifySignedData } from '@keetanetwork/anchor/lib/utils/signing.js';
 
 const require = createRequire(import.meta.url);
 const KeetaNet = require('@keetanetwork/keetanet-client');
 const { Account, Block } = KeetaNet.lib;
 const { UserClient } = KeetaNet;
 
-const KTA = 'keeta_anyiff4v34alvumupagmdyosydeq24lc4def5mrpmmyhx3j6vj2uucckeqn52';
-const BTC = 'keeta_ao47xyunmfh5jcdkm7mgrfaaddp7a2nt2xvwrph6cgurvbeixh77qkfsglgms';
-const EXPLORER = 'https://explorer.test.keeta.com';
-const A = process.argv[2] || 'keeta_aabbbwy54rc4po5xksmmkwvbl2pcmiidly7563dy6aj2u6fs7tkehwbk5etuuia';
-const B = process.argv[3] || 'keeta_aabvhlabhl5yuqgwtyqmbdupvahz7siavg76cabqoyd6fhn72h6ytcn6qgddc2y';
+const KTA = 'keeta_anyiff4v34alvumupagmdyosydeq24lc4def5mrpmmyhx3j6vj2uucckeqn52'; // 9 dp
+const BTC = 'keeta_ao47xyunmfh5jcdkm7mgrfaaddp7a2nt2xvwrph6cgurvbeixh77qkfsglgms'; // 8 dp
+const KTA_SCALE = 1e9;
+const BTC_SCALE = 1e8;
+const DEFAULT_ORACLE = 'keeta_aaba7633k7zfn3hhavs7xh2yd27qdmbtspi5npnkvcvz7ticezcxmv6h3375hly';
 
-const tokenName = (id) => (id === KTA ? 'KTA' : id === BTC ? 'BTC' : (id ? id.slice(0, 12) + '…' : '?'));
-const pk = (x) => x?.publicKeyString?.get?.() ?? x?.toString?.() ?? null;
-
-// Return the blocks on `addr`'s chain that move KTA or BTC, with their per-account block hash + ops.
-async function swapBlocks(addr) {
-  const acct = Account.fromPublicKeyString(addr);
-  const client = UserClient.fromNetwork('test', null, { account: acct }); // null signer => READ-ONLY
-  const blocks = await client.chain(); // this account's chain, most-recent-first
-  const out = [];
-  for (const b of blocks) {
-    const ops = b.operations || (typeof b.toJSON === 'function' ? b.toJSON().operations : []) || [];
-    const rel = ops
-      .map((o) => ({ type: Block.OperationType?.[o.type] ?? `op${o.type}`, token: pk(o.token), amount: o.amount?.toString?.(), to: pk(o.to), from: pk(o.from) }))
-      .filter((o) => o.token === KTA || o.token === BTC);
-    if (rel.length) out.push({ hash: b.hash.toString(), ops: rel });
-  }
-  return out;
+const BLOCK_HASH = process.argv[2];
+const EXPECTED_ORACLE = process.argv[3] || process.env.EXPECTED_ORACLE || DEFAULT_ORACLE;
+if (!BLOCK_HASH) {
+  console.error('Usage: node examples/verify-swap-onchain.mjs <attestationBlockHash> [oraclePubkey]');
+  process.exit(2);
 }
 
-function printAccount(label, addr, blocks) {
-  console.log(`\n${label}: ${addr}`);
-  console.log(`  explorer: ${EXPLORER}/account/${addr}`);
-  for (const blk of blocks) {
-    console.log(`  block ${blk.hash}`);
-    console.log(`     ${EXPLORER}/block/${blk.hash}`);
-    for (const o of blk.ops) {
-      const dir = o.type === 'SEND' ? `SEND ${o.amount} ${tokenName(o.token)} -> ${o.to?.slice(0, 16)}…`
-        : o.type === 'RECEIVE' ? `RECEIVE ${o.amount} ${tokenName(o.token)} <- ${o.from?.slice(0, 16)}…`
-        : `${o.type} ${o.amount ?? ''} ${tokenName(o.token)}`;
-      console.log(`       · ${dir}`);
-    }
+const results = [];
+const check = (label, pass, detail) => {
+  results.push(pass);
+  console.log(`  [${pass ? 'PASS' : 'FAIL'}] ${label}${detail ? ` — ${detail}` : ''}`);
+};
+const pk = (x) => x?.publicKeyString?.get?.() ?? null;
+
+async function main() {
+  console.log(`CHAIN-ONLY verification of block ${BLOCK_HASH}`);
+  console.log(`  (reads the ledger only — no HTTP oracle, no seeds)\n`);
+
+  // Read the block by hash via a READ-ONLY client (null signer).
+  const client = UserClient.fromNetwork('test', null, { account: Account.fromPublicKeyString(EXPECTED_ORACLE) });
+  let block;
+  try {
+    block = await client.block(BLOCK_HASH);
+  } catch (e) {
+    check('block resolves on-chain by hash', false, e.message);
+    return finish();
   }
+  check('block resolves on-chain by hash', !!block, block ? `account ${pk(block.account)?.slice(0, 16)}…` : 'not found');
+  if (!block) return finish();
+
+  // Extract the swap legs (SEND KTA, RECEIVE BTC) and the attestation (SET_INFO metadata) from ops.
+  const ops = block.operations || (typeof block.toJSON === 'function' ? block.toJSON().operations : []) || [];
+  let sendKta = null;
+  let recvBtc = null;
+  let metaB64 = null;
+  for (const o of ops) {
+    const name = Block.OperationType?.[o.type];
+    const token = pk(o.token);
+    if (name === 'SEND' && token === KTA) sendKta = o.amount;
+    if (name === 'RECEIVE' && token === BTC) recvBtc = o.amount;
+    if (name === 'SET_INFO') metaB64 = o.metadata ?? (typeof o.toJSON === 'function' ? o.toJSON().metadata : undefined);
+  }
+  check('block has the swap legs (SEND KTA + RECEIVE BTC)', sendKta != null && recvBtc != null,
+    sendKta != null && recvBtc != null ? `${Number(sendKta) / KTA_SCALE} KTA <-> ${Number(recvBtc) / BTC_SCALE} BTC` : 'missing');
+
+  // (a) Extract + decode the embedded attestation.
+  let att = null;
+  try { att = JSON.parse(Buffer.from(metaB64, 'base64').toString('utf8')); } catch { /* ignore */ }
+  const attOk = !!(att && att.type === 'oracle-swap-attestation-v1' && att.prices?.['KTA-USD'] && att.prices?.['BTC-USD']);
+  check('(a) embedded oracle attestation present + decodes', attOk, att ? `type=${att.type}` : 'no SET_INFO metadata');
+  if (!attOk) return finish();
+
+  // Oracle identity: the embedded pubkey MUST be the known oracle account (not an impostor).
+  check('(b0) embedded oracle pubkey is the known oracle account', att.oracle === EXPECTED_ORACLE, att.oracle);
+
+  // (b) VerifySignedData against the oracle's public key for both prices.
+  const oracleAcct = Account.fromPublicKeyString(att.oracle);
+  const verifyPrice = async (pair) => {
+    const p = att.prices[pair];
+    const values = p.signedFields.map((f) => p.values[f]); // rebuild signed array from the embedded order
+    return VerifySignedData(oracleAcct, values, p.attestation);
+  };
+  const ktaOk = await verifyPrice('KTA-USD');
+  const btcOk = await verifyPrice('BTC-USD');
+  check('(b) oracle signature VALID — KTA-USD', ktaOk, `price=${att.prices['KTA-USD'].values.price}`);
+  check('(b) oracle signature VALID — BTC-USD', btcOk, `price=${att.prices['BTC-USD'].values.price}`);
+
+  // (c) Settled amounts match the attested price within rounding.
+  const ktaUsd = Number(att.prices['KTA-USD'].values.price);
+  const btcUsd = Number(att.prices['BTC-USD'].values.price);
+  const Xbase = Number(sendKta);
+  const Ybase = Number(recvBtc);
+  const impliedBtcUsd = ((Xbase / KTA_SCALE) * ktaUsd) / (Ybase / BTC_SCALE);
+  const errPct = Math.abs(impliedBtcUsd - btcUsd) / btcUsd * 100;
+  const tolPct = Math.max(0.5, (1 / Ybase) * 100); // ± one BTC base-unit's worth (looser for tiny amounts)
+  check('(c) settled amounts match the attested price (within rounding)', errPct <= tolPct,
+    `implied BTC-USD ${impliedBtcUsd.toFixed(2)} vs attested ${btcUsd} (err ${errPct.toFixed(4)}% <= tol ${tolPct.toFixed(3)}%)`);
+
+  return finish();
 }
 
-const aBlocks = await swapBlocks(A);
-const bBlocks = await swapBlocks(B);
-console.log('READ-ONLY on-chain proof of the oracle-priced KTA<->BTC swap (independent of the HTTP oracle):');
-printAccount('Party A', A, aBlocks);
-printAccount('Party B', B, bBlocks);
-console.log('\nWhat to check: A has a block that SENDs KTA to B and RECEIVEs BTC from B; B has a block');
-console.log('that SENDs the matching BTC to A. Both settled in one atomic staple (all-or-nothing).');
-process.exit(0);
+function finish() {
+  const allPass = results.length > 0 && results.every(Boolean);
+  console.log(`\n${allPass ? '✓ ALL CHECKS PASS' : '✗ VERIFICATION FAILED'} — ${allPass ? 'the oracle signed the price this on-chain swap settled at, provable from the chain alone.' : 'see failed checks above.'}`);
+  process.exit(allPass ? 0 : 1);
+}
+
+main().catch((e) => { console.error('VERIFIER ERROR:', e?.message || e); process.exit(1); });

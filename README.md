@@ -217,34 +217,48 @@ payoff: a signed oracle number driving a real on-chain settlement.
 
 **What it proves.** It fetches `KTA-USD` and `BTC-USD` from the live oracle, **verifies both
 signatures**, computes the cross rate, then settles **one atomic vote staple** — party A sends *X*
-KTA to B and B sends *Y* BTC to A, where *X/Y* equals the oracle cross rate — via Keeta's native
-`createSwapRequest`/`acceptSwapRequest`. Both legs settle atomically or neither does. It saves a
-proof bundle ([`examples/swap-proof.json`](examples/swap-proof.json)) with the verified signed
-prices, the computed rate, the **per-account block hashes**, and a check that the settled amounts
-match the oracle rate within rounding. A real run:
+KTA to B and B sends *Y* BTC to A, where *X/Y* equals the oracle cross rate. Crucially, **the oracle's
+full signed attestation is embedded ON-CHAIN in the same block as the swap** (A's block carries `SEND
+KTA` + `RECEIVE BTC` + a `SET_INFO` whose base64 metadata is the oracle attestation for both prices).
+So swap **and** the signed price it settled at are **one atomic record**, verifiable from the chain
+alone. It saves a proof bundle ([`examples/swap-proof.json`](examples/swap-proof.json)) with the
+verified signed prices, the rate, the **attestation block hash**, and the amount-vs-rate check. A real
+run:
 
 ```
-KTA-USD = 0.1172… (verified: true)   BTC-USD = 64771.53 (verified: true)   1 BTC = 545,795.04 KTA
-swap: A sends 10 KTA  <->  B sends 0.00001832 BTC   (KTA 9dp, BTC 8dp, exact)
-per-account blocks — A: 91AFCB9B…D8D3E2C7 (SEND 10 KTA + RECEIVE BTC),  B: 2CD93E15…B2CBFD1F (SEND BTC)
-swap legs EXACT: true   implied BTC-USD 64778.24 vs oracle 64771.53 (error 0.0104%)
+KTA-USD = 0.1190… (verified: true)   BTC-USD = 64805.94 (verified: true)   1 BTC = 544,453.88 KTA
+on-chain attestation metadata: 2140 base64 chars (SET_INFO limit ~5464)
+swap: A sends 5 KTA  <->  B sends 0.00000918 BTC   (KTA 9dp, BTC 8dp, exact)
+ATTESTATION BLOCK (A): 9F0E99235CA06BA5EC92F5807E1CAE78A2F51B5DB25B4B4E7B325D199C81CFF9  (published: true)
+swap legs EXACT: true   implied BTC-USD 64830.75 vs attested 64805.94 (error 0.0383%)
 ```
 
-### Verify it yourself
+### Verify it yourself — from the chain alone
+The attestation block embeds the oracle's signature, so an observer can prove *from the chain alone*
+that the oracle signed the price this swap settled at — no off-chain price fetch:
+
+```bash
+node examples/verify-swap-onchain.mjs <attestationBlockHash>
+```
+It reads that block by hash (READ-ONLY, no seeds), extracts the embedded attestation, runs
+`VerifySignedData` against the oracle's public key for **both** prices (and checks the embedded oracle
+pubkey is the known oracle account), and confirms the settled KTA/BTC amounts match the attested price
+within rounding — printing PASS/FAIL per check. Real output:
+
+```
+[PASS] block resolves on-chain by hash
+[PASS] block has the swap legs (SEND KTA + RECEIVE BTC) — 5 KTA <-> 0.00000918 BTC
+[PASS] (a) embedded oracle attestation present + decodes — type=oracle-swap-attestation-v1
+[PASS] (b0) embedded oracle pubkey is the known oracle account
+[PASS] (b) oracle signature VALID — KTA-USD / BTC-USD
+[PASS] (c) settled amounts match the attested price (within rounding)
+✓ ALL CHECKS PASS — the oracle signed the price this on-chain swap settled at, provable from the chain alone.
+```
+
 An atomic swap settles as a vote **staple**, whose `blocksHash` is an internal aggregate identifier
-that block explorers do **not** index. What *is* resolvable is each account's own **block** (by hash)
-and its **history**. Two ways to check:
-
-- **Read-only script (authoritative — no HTTP oracle, no seeds):**
-  ```bash
-  node examples/verify-swap-onchain.mjs <addressA> <addressB>
-  ```
-  It reads both accounts' chains directly from the ledger and prints the swap blocks: A's block that
-  SENDs KTA to B and RECEIVEs BTC from B, and B's block that SENDs the matching BTC to A.
-- **Explorer:** open the [testnet explorer](https://explorer.test.keeta.com) and paste an **account
-  address** (or a **block hash**) — e.g. `https://explorer.test.keeta.com/account/<addressA>`. (Deep
-  links return an HTTP 404 status but still serve the app, which resolves the address client-side via
-  the same node API.)
+that block explorers do **not** index — so verify against the per-account **block hash** (or the
+account address on the [testnet explorer](https://explorer.test.keeta.com); deep links return an HTTP
+404 status but still serve the app, which resolves client-side via the same node API).
 
 **Honest framing.** Both accounts (A and B) are controlled by the **same operator** — the script
 holds both throwaway seeds. This demonstrates the **mechanism** (a signed oracle price driving a real
