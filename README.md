@@ -251,9 +251,20 @@ within rounding — printing PASS/FAIL per check. Real output:
 [PASS] (a) embedded oracle attestation present + decodes — type=oracle-swap-attestation-v1
 [PASS] (b0) embedded oracle pubkey is the known oracle account
 [PASS] (b) oracle signature VALID — KTA-USD / BTC-USD
+[PASS] (b1) attestation was FRESH at settlement — block 2026-07-19T00:12:36.017Z, max gap 0.8s (limit 300s)
 [PASS] (c) settled amounts match the attested price (within rounding)
 ✓ ALL CHECKS PASS — the oracle signed the price this on-chain swap settled at, provable from the chain alone.
 ```
+
+> **On time semantics (important if you reuse this).** `VerifySignedData` enforces a ±5 min skew
+> between the attestation timestamp and a `referenceTime` that **defaults to *now*** — replay
+> protection for a *live* quote. An on-chain attestation is historical, so verifying it against
+> *now* would fail for any block older than 5 minutes. The verifier therefore splits the concerns:
+> **(b)** is a pure *signature* check (`referenceTime` = the attestation's own timestamp, so it is
+> time-independent and valid forever), and **(b1)** separately proves *freshness at settlement* by
+> comparing the attestation timestamp to the **block's own on-chain date** — so a stale price would
+> still be caught. Both inputs are on-chain, so the whole verification stays chain-only and
+> reproducible at any future date.
 
 An atomic swap settles as a vote **staple**, whose `blocksHash` is an internal aggregate identifier
 that block explorers do **not** index — so verify against the per-account **block hash** (or the

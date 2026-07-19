@@ -88,16 +88,34 @@ async function main() {
   check('(b0) embedded oracle pubkey is the known oracle account', att.oracle === EXPECTED_ORACLE, att.oracle);
 
   // (b) VerifySignedData against the oracle's public key for both prices.
+  //
+  // NOTE on time: VerifySignedData enforces a ±5min skew between the attestation timestamp and a
+  // `referenceTime` that DEFAULTS TO NOW — replay protection for a live quote. An on-chain
+  // attestation is historical by nature, so verifying it against "now" would (correctly, by that
+  // rule) fail forever after 5 minutes. We therefore split the two concerns:
+  //   (b)  pure SIGNATURE check — referenceTime = the attestation's own timestamp (skew 0), so this
+  //        answers only "did the oracle sign exactly these values?" (time-independent, valid forever)
+  //   (b1) FRESHNESS check — explicitly compare the attestation timestamp to the BLOCK's on-chain
+  //        settlement date, proving the swap used a fresh price and not a stale one.
+  // Both inputs are on-chain, so this stays fully chain-only and reproducible at any future date.
   const oracleAcct = Account.fromPublicKeyString(att.oracle);
   const verifyPrice = async (pair) => {
     const p = att.prices[pair];
     const values = p.signedFields.map((f) => p.values[f]); // rebuild signed array from the embedded order
-    return VerifySignedData(oracleAcct, values, p.attestation);
+    return VerifySignedData(oracleAcct, values, p.attestation, { referenceTime: new Date(p.attestation.timestamp) });
   };
   const ktaOk = await verifyPrice('KTA-USD');
   const btcOk = await verifyPrice('BTC-USD');
   check('(b) oracle signature VALID — KTA-USD', ktaOk, `price=${att.prices['KTA-USD'].values.price}`);
   check('(b) oracle signature VALID — BTC-USD', btcOk, `price=${att.prices['BTC-USD'].values.price}`);
+
+  // (b1) Freshness AT SETTLEMENT: the oracle signed within FRESHNESS_MS of the block's own date.
+  const FRESHNESS_MS = 5 * 60 * 1000;
+  const blockDate = block.date ? new Date(block.date) : (typeof block.toJSON === 'function' ? new Date(block.toJSON().date) : null);
+  const gaps = ['KTA-USD', 'BTC-USD'].map((pair) => Math.abs(new Date(att.prices[pair].attestation.timestamp).valueOf() - (blockDate?.valueOf() ?? NaN)));
+  const worstGap = Math.max(...gaps);
+  check('(b1) attestation was FRESH at settlement (signed near the block date)', Number.isFinite(worstGap) && worstGap <= FRESHNESS_MS,
+    blockDate ? `block ${blockDate.toISOString()}, max gap ${(worstGap / 1000).toFixed(1)}s (limit ${FRESHNESS_MS / 1000}s)` : 'block has no date');
 
   // (c) Settled amounts match the attested price within rounding.
   const ktaUsd = Number(att.prices['KTA-USD'].values.price);
